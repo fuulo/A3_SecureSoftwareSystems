@@ -31,9 +31,7 @@ export default function VoterDashboardPage() {
               <p className="text-xs text-[#77817a]">Academic voter prototype</p>
             </div>
           </div>
-          <span className="rounded-full border border-[#eadfbe] bg-[#fcf8eb] px-3 py-1 text-[10px] font-semibold tracking-wide text-[#886a25] uppercase">
-            Demo environment
-          </span>
+          
         </header>
 
         <section className="rounded-3xl border border-[#e5eae5] bg-white p-6 shadow-[0_8px_30px_rgba(31,52,39,0.04)] sm:p-10">
