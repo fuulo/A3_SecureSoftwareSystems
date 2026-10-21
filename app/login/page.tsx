@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { mainHeader } from "../../components/styles";
+import { mainHeader, buttonStyle } from "../../components/styles";
 import Link from "next/link";
 
 export default function LoginPage() {
@@ -65,20 +65,32 @@ export default function LoginPage() {
             />
           </div>
 
-          <button
-            type="submit"
-              className="w-full rounded-lg bg-[#1f538d] px-6 py-3 text-[24px] font-bold text-white shadow-[0_8px_20px_rgba(0,0,0,0.35)] transition duration-200 hover:-translate-y-1 hover:bg-[#1b4779] hover:shadow-[0_14px_28px_rgba(0,0,0,0.4)] active:translate-y-0 active:shadow-[0_4px_10px_rgba(0,0,0,0.3)]"
-          >
+          <button type="submit" className={buttonStyle}>
             Submit
           </button>
         </form>
 
         <div className="mt-6 text-center">
           <Link
+            href="/create_acct"
+            className="text-[18px] text-[#1b4779] hover:underline"
+          >
+            No Account Yet? Click Here to Create One!
+          </Link>
+        </div>
+
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
+          <Link
+            href="/forgot_pw"
+            className="text-[13px] capitalize text-orange-700 hover:underline"
+          >
+            Forgot password?
+          </Link>
+          <Link
             href="/"
             className="text-[13px] capitalize text-[#1b4779] hover:underline"
           >
-            Back to start page
+            Back to home page
           </Link>
         </div>
       </div>

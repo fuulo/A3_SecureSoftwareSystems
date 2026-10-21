@@ -48,7 +48,7 @@ export default function Home() {
           <section id="questions" className="mb-0">
             <h2 className={`${subHeader} mb-2`}>3. Questions or Difficulties?</h2>
             <p className="mb-3 pl-4">
-              &#9654; If you are unsure, on-site AEC staffs are ready to help 
+              &#9654; If you are unsure, on-site AEC staff are ready to help 
             </p>
           </section>
         </main>
@@ -71,7 +71,7 @@ export default function Home() {
               href="/login"
                 className="inline-block rounded-lg bg-white px-8 py-3 text-[28px] font-bold capitalize text-[#1f538d] shadow-[0_8px_20px_rgba(0,0,0,0.35)] transition duration-200 hover:-translate-y-1 hover:bg-slate-100 hover:shadow-[0_14px_28px_rgba(0,0,0,0.4)] active:translate-y-0 active:shadow-[0_4px_10px_rgba(0,0,0,0.3)]"
             >
-              Log in
+              LOG IN
             </Link>
             <p className={`${handwriting.className} mt-6 text-[24px] text-white`}>
               “Vote Today for A Better Tomorrow!”
