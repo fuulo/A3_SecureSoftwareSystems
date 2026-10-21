@@ -1,2 +1,3 @@
 export const mainHeader = "text-[28px] font-bold text-[#1f538d]";
 export const subHeader = "text-[22px] font-semibold text-[#1f538d]";
+export const buttonStyle = "w-full rounded-lg bg-[#1f538d] px-6 py-3 text-[24px] font-bold text-white shadow-[0_8px_20px_rgba(0,0,0,0.35)] transition duration-200 hover:-translate-y-1 hover:bg-[#1b4779] hover:shadow-[0_14px_28px_rgba(0,0,0,0.4)] active:translate-y-0 active:shadow-[0_4px_10px_rgba(0,0,0,0.3)]";

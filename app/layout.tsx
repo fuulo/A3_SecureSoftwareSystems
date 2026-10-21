@@ -22,12 +22,21 @@ export default function RootLayout({
     <html lang="en">
       <body>
         <div
-          className={`${googleSans.className} flex min-h-screen flex-col bg-white text-[15px] text-[#222]`}
+          className={`${googleSans.className} relative min-h-screen bg-[#EAF3FC] text-[15px] text-[#222]`}
         >
-          <DisclaimerBar />
-          <Header />
-          <div className="flex-1">{children}</div>
-          <Footer />
+          {/* Logo as background (faint, fixed in the centre of the window) */}
+          <div
+            aria-hidden="true"
+            className="pointer-events-none fixed inset-0 z-0 bg-[url('/logo.png')] bg-[length:720px] bg-right-bottom bg-no-repeat opacity-10"
+          />
+
+          {/* Page content, above the background */}
+          <div className="relative z-10 flex min-h-screen flex-col">
+            <DisclaimerBar />
+            <Header />
+            <div className="flex-1">{children}</div>
+            <Footer />
+          </div>
         </div>
       </body>
     </html>
