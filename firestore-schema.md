@@ -15,6 +15,7 @@
 ## Collections Overview
 
 ```text
+/config/allowedIpRanges/{locationId}
 /staff/{staffId}
 /voters/{voterId}
     /addressHistory/{changeId}
@@ -37,6 +38,20 @@
 
 ## Collections Details
 
+## Config
+
+### `config/allowedIpRanges/{locationId}`
+
+```jsonc
+{
+  "cidr": "203.0.113.0/28",
+  "label": "London Diplomatic Mission",
+  "updatedBy": "staffId",
+  "updatedAt": "timestamp",
+  "active": true | false
+}
+```
+
 ## Staff
 
 ### `staff/{staffId}`
@@ -47,7 +62,14 @@
   "name": "Jane Citizen",
   "role": "aecEmployee | commissionerDelegate | admin",
   "stateId": "VIC",
-  "active": true | false
+  "active": true | false,
+  "createdBy": "staff_admin_0001",
+  "createdAt": "timestamp",
+  "updatedBy": "staff_admin_0001",
+  "updatedAt": "timestamp",
+  "deactivatedAt": null,
+  "deactivatedBy": null,
+  "lastLoginAt": "timestamp"
 }
 ```
 
@@ -123,7 +145,12 @@
   "type": "federal",
   "status": "setup | open | closed | counting | finalised",
   "openAt": "timestamp",
-  "closeAt": "timestamp"
+  "closeAt": "timestamp",
+  "timezone": "Australia/Melbourne",
+  "createdBy": "staff_admin_0001",
+  "createdAt": "timestamp",
+  "updatedBy": "staff_admin_0001",
+  "updatedAt": "timestamp"
 }
 ```
 
@@ -255,11 +282,7 @@
 ```jsonc
 {
   "status": "active | disabled",
-  "registeredDeviceId": "...",
-  "geofence": {                      // for overseas mission restrictions
-    "center": "GeoPoint",
-    "radiusM": 200
-  }
+  "registeredDeviceId": "..."
 }
 ```
 
@@ -268,11 +291,7 @@
 ```jsonc
 {
   "status": "active",
-  "registeredDeviceId": "dev_7f3a91",
-  "geofence": {
-    "center": "GeoPoint(51.5115, -0.1170)",
-    "radiusM": 200                   // allowed to operate within 200 metres of the coordinates
-  }
+  "registeredDeviceId": "dev_7f3a91"
 }
 ```
 
