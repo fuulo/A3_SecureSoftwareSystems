@@ -2,7 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { createUserWithEmailAndPassword } from "firebase/auth";
+import {
+  createUserWithEmailAndPassword,
+  sendEmailVerification,
+} from "firebase/auth";
 import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 import { mainHeader, buttonStyle } from "../../components/styles";
@@ -29,12 +32,14 @@ const emptyForm = {
   confirmPassword: "",
 };
 
-type FormErrors = Partial<Record<keyof typeof emptyForm, string>>;
+type FormData = typeof emptyForm;
+type FormErrors = Partial<Record<keyof FormData, string>>;
 
 const inputStyle =
   "w-full rounded border border-slate-400 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#1f538d]";
 
-const linkStyle = "text-[13px] capitalize text-[#1b4779] hover:underline";
+const linkStyle =
+  "text-[13px] capitalize text-[#1b4779] hover:underline";
 
 function getAge(dob: string): number | null {
   const [year, month, day] = dob.split("-").map(Number);
@@ -80,7 +85,7 @@ function getLatestDob(): string {
 
 export default function CreateAccountPage() {
   const [step, setStep] = useState<Step>("form");
-  const [form, setForm] = useState(emptyForm);
+  const [form, setForm] = useState<FormData>(emptyForm);
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<FormErrors>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -97,22 +102,22 @@ export default function CreateAccountPage() {
     event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
   ) {
     const { name, value } = event.target;
+    const fieldName = name as keyof FormData;
 
     setForm((previous) => ({
       ...previous,
-      [name]: value,
+      [fieldName]: value,
     }));
 
     setFieldErrors((previous) => ({
       ...previous,
-      [name as keyof typeof emptyForm]: "",
+      [fieldName]: "",
     }));
 
     setError("");
   }
 
-
-  function fieldClass(field: keyof typeof emptyForm) {
+  function fieldClass(field: keyof FormData) {
     return `${inputStyle} ${
       fieldErrors[field] ? "border-red-500" : ""
     }`;
@@ -189,7 +194,9 @@ export default function CreateAccountPage() {
       firebaseError !== null &&
       "code" in firebaseError
     ) {
-      const code = String(firebaseError.code);
+      const code = String(
+        (firebaseError as { code?: unknown }).code
+      );
 
       if (code === "auth/email-already-in-use") {
         return "This email address is already registered.";
@@ -215,7 +222,9 @@ export default function CreateAccountPage() {
     return "Unable to create the account. Please try again.";
   }
 
-  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmit(
+    event: React.FormEvent<HTMLFormElement>
+  ) {
     event.preventDefault();
 
     const errors = validate();
@@ -236,6 +245,8 @@ export default function CreateAccountPage() {
         form.email.trim(),
         form.password
       );
+
+      await sendEmailVerification(credential.user);
 
       await setDoc(doc(db, "users", credential.user.uid), {
         givenName: form.givenName.trim(),
@@ -274,7 +285,11 @@ export default function CreateAccountPage() {
               Enter your details below to create your voter account.
             </p>
 
-            <form onSubmit={handleSubmit} noValidate className="space-y-5">
+            <form
+              onSubmit={handleSubmit}
+              noValidate
+              className="space-y-5"
+            >
               <div className="grid gap-5 sm:grid-cols-2">
                 <div>
                   <label
@@ -292,8 +307,6 @@ export default function CreateAccountPage() {
                     maxLength={50}
                     placeholder="e.g. Alex"
                     required
-                    pattern="[A-Za-zÀ-ÖØ-öø-ÿ' -]+"
-                    title="Use letters, spaces, apostrophes and hyphens only."
                     value={form.givenName}
                     onChange={handleChange}
                     aria-invalid={Boolean(fieldErrors.givenName)}
@@ -304,8 +317,8 @@ export default function CreateAccountPage() {
                   {fieldErrors.givenName && (
                     <p
                       id="givenName-error"
-                      className="mt-1 text-[13px] text-red-700"
                       role="alert"
+                      className="mt-1 text-[13px] text-red-700"
                     >
                       {fieldErrors.givenName}
                     </p>
@@ -313,7 +326,10 @@ export default function CreateAccountPage() {
                 </div>
 
                 <div>
-                  <label htmlFor="surname" className="mb-1 block font-semibold">
+                  <label
+                    htmlFor="surname"
+                    className="mb-1 block font-semibold"
+                  >
                     Surname
                   </label>
 
@@ -325,8 +341,6 @@ export default function CreateAccountPage() {
                     maxLength={50}
                     placeholder="e.g. Smith"
                     required
-                    pattern="[A-Za-zÀ-ÖØ-öø-ÿ' -]+"
-                    title="Use letters, spaces, apostrophes and hyphens only."
                     value={form.surname}
                     onChange={handleChange}
                     aria-invalid={Boolean(fieldErrors.surname)}
@@ -337,8 +351,8 @@ export default function CreateAccountPage() {
                   {fieldErrors.surname && (
                     <p
                       id="surname-error"
-                      className="mt-1 text-[13px] text-red-700"
                       role="alert"
+                      className="mt-1 text-[13px] text-red-700"
                     >
                       {fieldErrors.surname}
                     </p>
@@ -347,7 +361,10 @@ export default function CreateAccountPage() {
               </div>
 
               <div>
-                <label htmlFor="dob" className="mb-1 block font-semibold">
+                <label
+                  htmlFor="dob"
+                  className="mb-1 block font-semibold"
+                >
                   Date of birth
                 </label>
 
@@ -363,14 +380,14 @@ export default function CreateAccountPage() {
                   onChange={handleChange}
                   aria-invalid={Boolean(fieldErrors.dob)}
                   aria-describedby="dob-error"
-                  className={`${fieldClass("dob")} [color-scheme:light]`}
+                  className={fieldClass("dob")}
                 />
 
                 {fieldErrors.dob && (
                   <p
                     id="dob-error"
-                    className="mt-1 text-[13px] text-red-700"
                     role="alert"
+                    className="mt-1 text-[13px] text-red-700"
                   >
                     {fieldErrors.dob}
                   </p>
@@ -382,7 +399,10 @@ export default function CreateAccountPage() {
               </div>
 
               <div>
-                <label htmlFor="govId" className="mb-1 block font-semibold">
+                <label
+                  htmlFor="govId"
+                  className="mb-1 block font-semibold"
+                >
                   GovID
                 </label>
 
@@ -405,8 +425,8 @@ export default function CreateAccountPage() {
                 {fieldErrors.govId && (
                   <p
                     id="govId-error"
-                    className="mt-1 text-[13px] text-red-700"
                     role="alert"
+                    className="mt-1 text-[13px] text-red-700"
                   >
                     {fieldErrors.govId}
                   </p>
@@ -418,7 +438,10 @@ export default function CreateAccountPage() {
               </div>
 
               <div>
-                <label htmlFor="address" className="mb-1 block font-semibold">
+                <label
+                  htmlFor="address"
+                  className="mb-1 block font-semibold"
+                >
                   Residential address
                 </label>
 
@@ -440,8 +463,8 @@ export default function CreateAccountPage() {
                 {fieldErrors.address && (
                   <p
                     id="address-error"
-                    className="mt-1 text-[13px] text-red-700"
                     role="alert"
+                    className="mt-1 text-[13px] text-red-700"
                   >
                     {fieldErrors.address}
                   </p>
@@ -449,7 +472,10 @@ export default function CreateAccountPage() {
               </div>
 
               <div>
-                <label htmlFor="email" className="mb-1 block font-semibold">
+                <label
+                  htmlFor="email"
+                  className="mb-1 block font-semibold"
+                >
                   Email address
                 </label>
 
@@ -472,8 +498,8 @@ export default function CreateAccountPage() {
                 {fieldErrors.email && (
                   <p
                     id="email-error"
-                    className="mt-1 text-[13px] text-red-700"
                     role="alert"
+                    className="mt-1 text-[13px] text-red-700"
                   >
                     {fieldErrors.email}
                   </p>
@@ -486,7 +512,10 @@ export default function CreateAccountPage() {
               </div>
 
               <div>
-                <label htmlFor="password" className="mb-1 block font-semibold">
+                <label
+                  htmlFor="password"
+                  className="mb-1 block font-semibold"
+                >
                   Password
                 </label>
 
@@ -507,8 +536,8 @@ export default function CreateAccountPage() {
                 {fieldErrors.password && (
                   <p
                     id="password-error"
-                    className="mt-1 text-[13px] text-red-700"
                     role="alert"
+                    className="mt-1 text-[13px] text-red-700"
                   >
                     {fieldErrors.password}
                   </p>
@@ -544,8 +573,8 @@ export default function CreateAccountPage() {
                 {fieldErrors.confirmPassword && (
                   <p
                     id="confirmPassword-error"
-                    className="mt-1 text-[13px] text-red-700"
                     role="alert"
+                    className="mt-1 text-[13px] text-red-700"
                   >
                     {fieldErrors.confirmPassword}
                   </p>
@@ -564,9 +593,7 @@ export default function CreateAccountPage() {
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className={`${buttonStyle} ${
-                  isSubmitting ? "cursor-not-allowed opacity-60" : ""
-                }`}
+                className={`${buttonStyle} disabled:cursor-not-allowed disabled:opacity-60`}
               >
                 {isSubmitting ? "Creating account..." : "Create account"}
               </button>
@@ -587,10 +614,14 @@ export default function CreateAccountPage() {
             </h1>
 
             <p className="mb-6 text-center">
-              Your voter account has been created successfully.
+              Your voter account has been created. Check your email and verify
+              your address before signing in.
             </p>
 
-            <Link href="/login" className={`${buttonStyle} block text-center`}>
+            <Link
+              href="/login"
+              className={`${buttonStyle} block text-center`}
+            >
               Go to login
             </Link>
           </>

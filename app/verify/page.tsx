@@ -1,157 +1,181 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
-import { mainHeader, buttonStyle } from "../../components/styles";
 import { useRouter } from "next/navigation";
-
-// Settings (change them here)
-const CODE_LENGTH = 6;
-const RESEND_SECONDS = 60;
-const NEXT_PAGE = "/voter/dashboard";
+import Link from "next/link";
+import { sendEmailVerification, signOut } from "firebase/auth";
+import { auth } from "../../lib/firebase";
+import { mainHeader, buttonStyle } from "../../components/styles";
 
 export default function VerifyPage() {
-  const [code, setCode] = useState("");
-  const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
-  const [secondsLeft, setSecondsLeft] = useState(RESEND_SECONDS);
-  const [warning, setWarning] = useState("");
   const router = useRouter();
 
-  // Clear the form when the page is shown again by back/forward navigation
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [isSending, setIsSending] = useState(false);
+  const [isChecking, setIsChecking] = useState(false);
+
   useEffect(() => {
-    function clearForm() {
-      setCode("");
-      setError("");
-      setMessage("");
-      setWarning("");
+    async function checkVerificationStatus() {
+      const user = auth.currentUser;
+
+      if (!user) {
+        setError("Please sign in before verifying your email address.");
+        return;
+      }
+
+      try {
+        await user.reload();
+
+        if (user.emailVerified) {
+          setMessage(
+            "Your email address is already verified. You may now sign in.",
+          );
+        }
+      } catch (firebaseError) {
+        console.error(firebaseError);
+        setError("Unable to check your verification status.");
+      }
     }
 
-    window.addEventListener("pageshow", clearForm);
-    return () => window.removeEventListener("pageshow", clearForm);
+    void checkVerificationStatus();
   }, []);
 
-  // Count down for the "Resend code" button
-  useEffect(() => {
-    if (secondsLeft <= 0) return;
-    const timer = setTimeout(() => setSecondsLeft((s) => s - 1), 1000);
-    return () => clearTimeout(timer);
-  }, [secondsLeft]);
-
-  // Hide the warning after 3 seconds
-  useEffect(() => {
-    if (!warning) return;
-    const timer = setTimeout(() => setWarning(""), 3000);
-    return () => clearTimeout(timer);
-  }, [warning]);
-
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function handleResend() {
+    setError("");
     setMessage("");
 
-    if (code.length !== CODE_LENGTH) {
-      setError(`Please enter the ${CODE_LENGTH}-digit MFA code.`);
+    const user = auth.currentUser;
+
+    if (!user) {
+      setError("Please sign in before requesting a verification email.");
       return;
     }
-    setError("");
 
-    // In this demo we don't verify MFA
-    // setError("The code is incorrect or has expired.");
-    // setCode("");
-    router.push(NEXT_PAGE);
+    if (user.emailVerified) {
+      setMessage("Your email address has already been verified.");
+      return;
+    }
+
+    setIsSending(true);
+
+    try {
+      await sendEmailVerification(user);
+
+      setMessage(
+        "A new verification link has been sent. Check your inbox and spam folder.",
+      );
+    } catch (firebaseError) {
+      console.error(firebaseError);
+      setError("Unable to send the verification email. Please try again.");
+    } finally {
+      setIsSending(false);
+    }
   }
 
-  function handleResend() {
-    if (secondsLeft > 0) return;
-
-    setCode("");
+  async function handleCheckVerification() {
     setError("");
+    setMessage("");
 
-    setMessage("Demo only: no verification code was sent.");
-    setSecondsLeft(RESEND_SECONDS);
+    const user = auth.currentUser;
+
+    if (!user) {
+      setError("Please sign in before checking your verification status.");
+      return;
+    }
+
+    setIsChecking(true);
+
+    try {
+      await user.reload();
+
+      if (user.emailVerified) {
+        setMessage("Your email address is verified. You may now sign in.");
+      } else {
+        setError(
+          "Your email is not verified yet. Click the verification link in the email first.",
+        );
+      }
+    } catch (firebaseError) {
+      console.error(firebaseError);
+      setError("Unable to check your verification status.");
+    } finally {
+      setIsChecking(false);
+    }
+  }
+
+  async function handleSignOut() {
+    try {
+      await signOut(auth);
+      router.replace("/login");
+    } catch (firebaseError) {
+      console.error(firebaseError);
+      setError("Unable to sign out. Please try again.");
+    }
   }
 
   return (
     <div className="flex min-h-[60vh] items-center justify-center px-6 py-12">
       <div className="w-full max-w-md rounded-lg border border-slate-300 bg-white p-8 shadow-lg">
-        <h1 className={`${mainHeader} mb-2 text-center`}>Verify Your Identity</h1>
-        <p className="mb-1 text-center">
-          Enter a {CODE_LENGTH}-digit verification code below.
-        </p>
-        <p className="mb-1 text-[10px] text-center">
-          (This demo does not send or verify codes.
-        </p>
-        <p className="mb-6 text-[10px] text-center">
-          Verification is simulated - no identity is verified.)
+        <h1 className={`${mainHeader} mb-2 text-center`}>
+          Verify Your Email
+        </h1>
+
+        <p className="mb-6 text-center">
+          Open the verification email sent to your address and click the
+          verification link. This page does not use a numeric code.
         </p>
 
-        <form onSubmit={handleSubmit} noValidate className="space-y-5">
-          <div>
-            <label htmlFor="code" className="mb-1 block font-semibold">
-              Verification code
-            </label>
-            <input
-              id="code"
-              name="code"
-              type="text"
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              autoFocus
-              maxLength={CODE_LENGTH}
-              value={code}
-              onChange={(e) => {
-                const raw = e.target.value;
-                setCode(raw.replace(/\D/g, "").slice(0, CODE_LENGTH));
-                setWarning(/\D/.test(raw) ? "Only numbers are allowed." : "");
-              }}
-              aria-invalid={error ? true : undefined}
-              className="w-full rounded border border-slate-400 px-3 py-2 text-center text-[28px] font-semibold tracking-[0.4em] focus:outline-none focus:ring-2 focus:ring-[#1f538d]"
-            />
-            {warning && (
-              <p
-                role="status"
-                className="mt-2 rounded border-amber-300 bg-amber-50 px-3 py-2 text-[13px] text-amber-800"
-              >
-                {warning}
-              </p>
-            )}
-          </div>
+        {error && (
+          <p
+            role="alert"
+            className="mb-4 rounded border border-red-300 bg-red-50 px-3 py-2 text-[13px] text-red-700"
+          >
+            {error}
+          </p>
+        )}
 
-          {error && (
-            <p
-              role="alert"
-              className="rounded border border-red-300 bg-red-50 px-3 py-2 text-[13px] text-red-700"
-            >
-              {error}
-            </p>
-          )}
+        {message && (
+          <p
+            role="status"
+            className="mb-4 rounded border border-green-300 bg-green-50 px-3 py-2 text-[13px] text-green-800"
+          >
+            {message}
+          </p>
+        )}
 
-          {message && (
-            <p
-              role="status"
-              className="rounded border border-green-300 bg-green-50 px-3 py-2 text-[13px] text-green-800"
-            >
-              {message}
-            </p>
-          )}
-
-          <button type="submit" className={buttonStyle}>
-            Verify
+        <div className="space-y-4">
+          <button
+            type="button"
+            onClick={handleCheckVerification}
+            disabled={isChecking}
+            className={`${buttonStyle} w-full disabled:cursor-not-allowed disabled:opacity-60`}
+          >
+            {isChecking ? "Checking..." : "I have verified my email"}
           </button>
-        </form>
 
-        <div className="mt-6 flex items-center justify-between">
           <button
             type="button"
             onClick={handleResend}
-            disabled={secondsLeft > 0}
-            className="text-[13px] capitalize text-[#1b4779] hover:underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline"
+            disabled={isSending}
+            className="w-full text-[13px] text-[#1b4779] hover:underline disabled:cursor-not-allowed disabled:text-slate-400"
           >
-            {secondsLeft > 0 ? `Resend code in ${secondsLeft}s` : "Resend code"}
+            {isSending ? "Sending..." : "Resend verification email"}
           </button>
+
+          <button
+            type="button"
+            onClick={handleSignOut}
+            className="w-full text-[13px] text-orange-700 hover:underline"
+          >
+            Sign out
+          </button>
+        </div>
+
+        <div className="mt-6 text-center">
           <Link
             href="/login"
-            className="text-[13px] capitalize text-[#1b4779] hover:underline"
+            className="text-[13px] text-[#1b4779] hover:underline"
           >
             Back to login
           </Link>
