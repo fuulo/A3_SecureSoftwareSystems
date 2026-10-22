@@ -16,11 +16,16 @@ export default function Header() {
             <Image
               src="/logo.png"
               alt="Mock voting system logo"
-              width={72}
-              height={72}
+              width={2000}
+              height={950}
+              className="h-auto w-[72px]"
             />
-            <span className={`${headerBrandStyle} leading-none`}>AUSTRALIA</span>
+
+            <span className={`${headerBrandStyle} leading-none`}>
+              AUSTRALIA
+            </span>
           </Link>
+
           <p className={`${headerTitleStyle} mt-3`}>
             Welcome to the Federal Election Online Voting System
           </p>
