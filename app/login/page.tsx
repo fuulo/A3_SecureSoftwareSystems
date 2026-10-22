@@ -1,102 +1,114 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
+import { signInWithEmailAndPassword } from "firebase/auth";
 import { useRouter } from "next/navigation";
-import { mainHeader, buttonStyle } from "../../components/styles";
+import { auth } from "@/lib/firebase";
+import {
+  mainHeader,
+  buttonStyle,
+} from "@/components/styles";
 
-const OTP_REQUEST_ENDPOINT = "/api/auth/request-email-otp";
+const inputStyle =
+  "w-full rounded border border-slate-400 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#1f538d]";
 
-type RequestOtpResponse = {
-  challengeId?: string;
-};
+const linkStyle =
+  "text-[13px] text-[#1b4779] hover:underline";
 
-export default function LoginPage() {
-  const formRef = useRef<HTMLFormElement>(null);
-  const router = useRouter();
+function getLoginErrorMessage(
+  firebaseError: unknown
+): string {
+  if (
+    typeof firebaseError === "object" &&
+    firebaseError !== null &&
+    "code" in firebaseError
+  ) {
+    const code = String(
+      (firebaseError as { code?: unknown }).code ??
+        ""
+    );
 
-  const [error, setError] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  useEffect(() => {
-    function clearForm() {
-      formRef.current?.reset();
-      setError("");
-      setIsSubmitting(false);
-      sessionStorage.removeItem("emailOtpChallengeId");
+    if (
+      code === "auth/invalid-credential" ||
+      code === "auth/user-not-found" ||
+      code === "auth/wrong-password"
+    ) {
+      return "The email address or password is incorrect.";
     }
 
-    clearForm();
-    window.addEventListener("pageshow", clearForm);
+    if (code === "auth/invalid-email") {
+      return "Please enter a valid email address.";
+    }
 
-    return () => {
-      window.removeEventListener("pageshow", clearForm);
-    };
-  }, []);
+    if (code === "auth/too-many-requests") {
+      return "Too many login attempts. Please try again later.";
+    }
+
+    if (code === "auth/user-disabled") {
+      return "This account has been disabled.";
+    }
+  }
+
+  return "Unable to log in. Please try again.";
+}
+
+export default function LoginPage() {
+  const router = useRouter();
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] =
+    useState("");
+
+  const [error, setError] = useState("");
+  const [isSubmitting, setIsSubmitting] =
+    useState(false);
 
   async function handleSubmit(
     event: React.FormEvent<HTMLFormElement>
   ) {
     event.preventDefault();
 
-    const data = new FormData(event.currentTarget);
-    const email = String(data.get("id") ?? "").trim();
-    const password = String(data.get("password") ?? "");
-
     setError("");
 
-    if (!email || !password) {
-      setError("Please enter both your email and password.");
+    const cleanEmail = email.trim().toLowerCase();
+
+    if (!cleanEmail || !password) {
+      setError(
+        "Please enter your email address and password."
+      );
       return;
     }
 
     setIsSubmitting(true);
 
     try {
-      const response = await fetch(OTP_REQUEST_ENDPOINT, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          email,
-          password,
-        }),
-      });
-
-      const result =
-        (await response.json().catch(() => null)) as
-          | RequestOtpResponse
-          | { message?: string }
-          | null;
-
-      if (!response.ok) {
-        setError(
-          "Email or password is incorrect, or an OTP could not be sent."
+      const credential =
+        await signInWithEmailAndPassword(
+          auth,
+          cleanEmail,
+          password
         );
-        return;
-      }
 
-      if (
-        !result ||
-        !("challengeId" in result) ||
-        typeof result.challengeId !== "string" ||
-        result.challengeId.length === 0
-      ) {
-        setError("The OTP service returned an invalid response.");
-        return;
-      }
+      /*
+       * Store only the authenticated user's UID.
+       * Do not store the password or authentication code.
+       */
+      sessionStorage.setItem(
+        "pendingAuthCodeUid",
+        credential.user.uid
+      );
 
       sessionStorage.setItem(
-        "emailOtpChallengeId",
-        result.challengeId
+        "pendingAuthCodeEmail",
+        cleanEmail
       );
 
       router.push("/verify");
-    } catch (requestError) {
-      console.error(requestError);
+    } catch (firebaseError) {
+      console.error(firebaseError);
       setError(
-        "Unable to start verification. Please try again."
+        getLoginErrorMessage(firebaseError)
       );
     } finally {
       setIsSubmitting(false);
@@ -104,53 +116,48 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-[60vh] items-center justify-center px-6 py-12">
-      <div className="w-full max-w-md rounded-lg border border-slate-300 bg-white p-8 shadow-lg">
-        <h1 className={`${mainHeader} mb-6 text-center`}>
-          Enter Your Login Details
+    <main className="flex min-h-[60vh] items-center justify-center px-6 py-12">
+      <section className="w-full max-w-md rounded-lg border border-slate-300 bg-white p-8 shadow-lg">
+        <h1 className={`${mainHeader} mb-2 text-center`}>
+          Login
         </h1>
 
-        <p className="mb-6 text-center text-[13px] text-slate-600">
-          After your details are accepted, a verification code will be sent to
-          your registered personal email address.
+        <p className="mb-8 text-center text-slate-600">
+          Enter your email address and password.
         </p>
 
         <form
-          ref={formRef}
           onSubmit={handleSubmit}
+          noValidate
           className="space-y-5"
         >
           <div>
             <label
-              htmlFor="id"
-              className="mb-1 block text-[18px] font-semibold"
+              htmlFor="email"
+              className="mb-1 block font-semibold"
             >
               Email address
             </label>
 
             <input
-              id="id"
-              name="id"
+              id="email"
+              name="email"
               type="email"
               autoComplete="email"
-              autoFocus
               required
-              onInvalid={(event) =>
-                event.currentTarget.setCustomValidity(
-                  "Email address must not be left empty."
-                )
-              }
-              onInput={(event) =>
-                event.currentTarget.setCustomValidity("")
-              }
-              className="w-full rounded border border-slate-400 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#1f538d]"
+              value={email}
+              onChange={(event) => {
+                setEmail(event.target.value);
+                setError("");
+              }}
+              className={inputStyle}
             />
           </div>
 
           <div>
             <label
               htmlFor="password"
-              className="mb-1 block text-[18px] font-semibold"
+              className="mb-1 block font-semibold"
             >
               Password
             </label>
@@ -161,15 +168,12 @@ export default function LoginPage() {
               type="password"
               autoComplete="current-password"
               required
-              onInvalid={(event) =>
-                event.currentTarget.setCustomValidity(
-                  "Password must not be left empty."
-                )
-              }
-              onInput={(event) =>
-                event.currentTarget.setCustomValidity("")
-              }
-              className="w-full rounded border border-slate-400 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#1f538d]"
+              value={password}
+              onChange={(event) => {
+                setPassword(event.target.value);
+                setError("");
+              }}
+              className={inputStyle}
             />
           </div>
 
@@ -188,36 +192,36 @@ export default function LoginPage() {
             className={`${buttonStyle} w-full disabled:cursor-not-allowed disabled:opacity-60`}
           >
             {isSubmitting
-              ? "Sending verification code..."
-              : "Continue"}
+              ? "Logging in..."
+              : "Login"}
           </button>
         </form>
 
-        <div className="mt-6 text-center">
-          <Link
-            href="/create_acct"
-            className="text-[18px] text-[#1b4779] hover:underline"
-          >
-            No Account Yet? Click Here to Create One!
-          </Link>
-        </div>
-
-        <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
+        <div className="mt-6 flex flex-wrap justify-between gap-3">
           <Link
             href="/forgot_pw"
-            className="text-[13px] capitalize text-orange-700 hover:underline"
+            className={linkStyle}
           >
             Forgot password?
           </Link>
 
           <Link
+            href="/create_acct"
+            className={linkStyle}
+          >
+            Create account
+          </Link>
+        </div>
+
+        <div className="mt-3 text-center">
+          <Link
             href="/"
-            className="text-[13px] capitalize text-[#1b4779] hover:underline"
+            className={linkStyle}
           >
             Back to home page
           </Link>
         </div>
-      </div>
-    </div>
+      </section>
+    </main>
   );
 }

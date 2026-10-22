@@ -1,186 +1,214 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
-import { sendEmailVerification, signOut } from "firebase/auth";
-import { auth } from "../../lib/firebase";
-import { mainHeader, buttonStyle } from "../../components/styles";
+import {
+  mainHeader,
+  buttonStyle,
+} from "@/components/styles";
 
-export default function VerifyPage() {
+const CODE_LENGTH = 6;
+const NEXT_PAGE = "/voter/dashboard";
+
+const inputStyle =
+  "w-full rounded border border-slate-400 px-3 py-2 text-center text-[28px] font-semibold tracking-[0.4em] focus:outline-none focus:ring-2 focus:ring-[#1f538d]";
+
+const linkStyle =
+  "text-[13px] text-[#1b4779] hover:underline";
+
+export default function AuthenticationCodePage() {
   const router = useRouter();
 
-  const [message, setMessage] = useState("");
+  const [code, setCode] = useState("");
   const [error, setError] = useState("");
-  const [isSending, setIsSending] = useState(false);
-  const [isChecking, setIsChecking] = useState(false);
+  const [message, setMessage] = useState("");
+  const [isSubmitting, setIsSubmitting] =
+    useState(false);
 
   useEffect(() => {
-    async function checkVerificationStatus() {
-      const user = auth.currentUser;
+    const pendingUid = sessionStorage.getItem(
+      "pendingAuthCodeUid"
+    );
 
-      if (!user) {
-        setError("Please sign in before verifying your email address.");
-        return;
-      }
-
-      try {
-        await user.reload();
-
-        if (user.emailVerified) {
-          setMessage(
-            "Your email address is already verified. You may now sign in.",
-          );
-        }
-      } catch (firebaseError) {
-        console.error(firebaseError);
-        setError("Unable to check your verification status.");
-      }
-    }
-
-    void checkVerificationStatus();
-  }, []);
-
-  async function handleResend() {
-    setError("");
-    setMessage("");
-
-    const user = auth.currentUser;
-
-    if (!user) {
-      setError("Please sign in before requesting a verification email.");
-      return;
-    }
-
-    if (user.emailVerified) {
-      setMessage("Your email address has already been verified.");
-      return;
-    }
-
-    setIsSending(true);
-
-    try {
-      await sendEmailVerification(user);
-
-      setMessage(
-        "A new verification link has been sent. Check your inbox and spam folder.",
-      );
-    } catch (firebaseError) {
-      console.error(firebaseError);
-      setError("Unable to send the verification email. Please try again.");
-    } finally {
-      setIsSending(false);
-    }
-  }
-
-  async function handleCheckVerification() {
-    setError("");
-    setMessage("");
-
-    const user = auth.currentUser;
-
-    if (!user) {
-      setError("Please sign in before checking your verification status.");
-      return;
-    }
-
-    setIsChecking(true);
-
-    try {
-      await user.reload();
-
-      if (user.emailVerified) {
-        setMessage("Your email address is verified. You may now sign in.");
-      } else {
-        setError(
-          "Your email is not verified yet. Click the verification link in the email first.",
-        );
-      }
-    } catch (firebaseError) {
-      console.error(firebaseError);
-      setError("Unable to check your verification status.");
-    } finally {
-      setIsChecking(false);
-    }
-  }
-
-  async function handleSignOut() {
-    try {
-      await signOut(auth);
+    if (!pendingUid) {
       router.replace("/login");
-    } catch (firebaseError) {
-      console.error(firebaseError);
-      setError("Unable to sign out. Please try again.");
     }
+  }, [router]);
+
+  function handleCodeChange(
+    event: React.ChangeEvent<HTMLInputElement>
+  ) {
+    const digitsOnly = event.target.value
+      .replace(/\D/g, "")
+      .slice(0, CODE_LENGTH);
+
+    setCode(digitsOnly);
+    setError("");
+    setMessage("");
+  }
+
+  async function handleSubmit(
+    event: React.FormEvent<HTMLFormElement>
+  ) {
+    event.preventDefault();
+
+    setError("");
+    setMessage("");
+
+    const pendingUid = sessionStorage.getItem(
+      "pendingAuthCodeUid"
+    );
+
+    if (!pendingUid) {
+      setError(
+        "Your login session has expired. Please log in again."
+      );
+      router.replace("/login");
+      return;
+    }
+
+    if (code.length !== CODE_LENGTH) {
+      setError(
+        `Please enter the ${CODE_LENGTH}-digit authentication code.`
+      );
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      /*
+       * DEMO MODE:
+       * The code is accepted after the correct number of
+       * digits has been entered.
+       *
+       * Replace this block with server-side or Firebase
+       * MFA verification before using this application
+       * in production.
+       */
+
+      sessionStorage.removeItem(
+        "pendingAuthCodeUid"
+      );
+
+      sessionStorage.removeItem(
+        "pendingAuthCodeEmail"
+      );
+
+      sessionStorage.setItem(
+        "authenticationCodeVerified",
+        "true"
+      );
+
+      router.push(NEXT_PAGE);
+    } catch (verificationError) {
+      console.error(verificationError);
+      setError(
+        "The authentication code could not be processed."
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  function handleBackToLogin() {
+    sessionStorage.removeItem(
+      "pendingAuthCodeUid"
+    );
+
+    sessionStorage.removeItem(
+      "pendingAuthCodeEmail"
+    );
+
+    router.push("/login");
   }
 
   return (
-    <div className="flex min-h-[60vh] items-center justify-center px-6 py-12">
-      <div className="w-full max-w-md rounded-lg border border-slate-300 bg-white p-8 shadow-lg">
+    <main className="flex min-h-[60vh] items-center justify-center px-6 py-12">
+      <section className="w-full max-w-md rounded-lg border border-slate-300 bg-white p-8 shadow-lg">
         <h1 className={`${mainHeader} mb-2 text-center`}>
-          Verify Your Email
+          Authentication Code
         </h1>
 
-        <p className="mb-6 text-center">
-          Open the verification email sent to your address and click the
-          verification link. This page does not use a numeric code.
+        <p className="mb-8 text-center text-slate-600">
+          Enter the authentication code to continue.
         </p>
 
-        {error && (
-          <p
-            role="alert"
-            className="mb-4 rounded border border-red-300 bg-red-50 px-3 py-2 text-[13px] text-red-700"
-          >
-            {error}
-          </p>
-        )}
+        <form
+          onSubmit={handleSubmit}
+          className="space-y-5"
+        >
+          <div>
+            <label
+              htmlFor="authenticationCode"
+              className="mb-1 block font-semibold"
+            >
+              Authentication code
+            </label>
 
-        {message && (
-          <p
-            role="status"
-            className="mb-4 rounded border border-green-300 bg-green-50 px-3 py-2 text-[13px] text-green-800"
-          >
-            {message}
-          </p>
-        )}
+            <input
+              id="authenticationCode"
+              name="authenticationCode"
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              pattern="[0-9]*"
+              maxLength={CODE_LENGTH}
+              required
+              autoFocus
+              value={code}
+              onChange={handleCodeChange}
+              aria-invalid={error ? true : undefined}
+              className={`${inputStyle} ${
+                error ? "border-red-500" : ""
+              }`}
+            />
 
-        <div className="space-y-4">
+            <p className="mt-2 text-center text-xs text-slate-500">
+              Enter exactly {CODE_LENGTH} numbers.
+            </p>
+          </div>
+
+          {error && (
+            <p
+              role="alert"
+              className="rounded border border-red-300 bg-red-50 px-3 py-2 text-[13px] text-red-700"
+            >
+              {error}
+            </p>
+          )}
+
+          {message && (
+            <p
+              role="status"
+              className="rounded border border-green-300 bg-green-50 px-3 py-2 text-[13px] text-green-700"
+            >
+              {message}
+            </p>
+          )}
+
           <button
-            type="button"
-            onClick={handleCheckVerification}
-            disabled={isChecking}
+            type="submit"
+            disabled={isSubmitting}
             className={`${buttonStyle} w-full disabled:cursor-not-allowed disabled:opacity-60`}
           >
-            {isChecking ? "Checking..." : "I have verified my email"}
+            {isSubmitting
+              ? "Checking code..."
+              : "Continue"}
           </button>
-
-          <button
-            type="button"
-            onClick={handleResend}
-            disabled={isSending}
-            className="w-full text-[13px] text-[#1b4779] hover:underline disabled:cursor-not-allowed disabled:text-slate-400"
-          >
-            {isSending ? "Sending..." : "Resend verification email"}
-          </button>
-
-          <button
-            type="button"
-            onClick={handleSignOut}
-            className="w-full text-[13px] text-orange-700 hover:underline"
-          >
-            Sign out
-          </button>
-        </div>
+        </form>
 
         <div className="mt-6 text-center">
-          <Link
-            href="/login"
-            className="text-[13px] text-[#1b4779] hover:underline"
+          <button
+            type="button"
+            onClick={handleBackToLogin}
+            className={linkStyle}
           >
             Back to login
-          </Link>
+          </button>
         </div>
-      </div>
-    </div>
+      </section>
+    </main>
   );
 }

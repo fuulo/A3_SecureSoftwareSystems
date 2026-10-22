@@ -1,105 +1,156 @@
-import Link from "next/link";
-import type { Metadata } from "next";
-import RequireAuth from "../../../components/requireauth";
+"use client";
 
-export const metadata: Metadata = {
-  title: "Voter dashboard",
-  description: "Secure academic prototype voter dashboard.",
-};
-
-const voterDetails = [
-  { label: "Division", value: "Demo Division" },
-  { label: "Enrolment status", value: "Enrolled" },
-  { label: "Eligibility status", value: "Eligible" },
-  { label: "Voting status", value: "Not voted" },
-  { label: "Election status", value: "Open" },
-];
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import {
+  onAuthStateChanged,
+  signOut,
+  User,
+} from "firebase/auth";
+import { auth } from "@/lib/firebase";
+import {
+  buttonStyle,
+  mainHeader,
+} from "@/components/styles";
 
 export default function VoterDashboardPage() {
-  return (
-    <RequireAuth>
-      <main className="min-h-screen bg-[#f7f8f6] px-5 py-10 text-[#202923] sm:px-8 sm:py-16">
-        <div className="mx-auto max-w-4xl">
-          <header className="mb-8 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <span
-                aria-hidden="true"
-                className="flex size-10 items-center justify-center rounded-xl bg-[#173f32] text-lg font-semibold text-white"
-              >
-                C
-              </span>
-              <div>
-                <p className="font-semibold tracking-tight">Common</p>
-                <p className="text-xs text-[#77817a]">Academic voter prototype</p>
-              </div>
-            </div>
-            
-          </header>
+  const router = useRouter();
 
-          <section className="rounded-3xl border border-[#e5eae5] bg-white p-6 shadow-[0_8px_30px_rgba(31,52,39,0.04)] sm:p-10">
-            <div className="mb-8 border-b border-[#edf0ed] pb-7">
-              <p className="mb-2 text-xs font-semibold tracking-[0.16em] text-[#728077] uppercase">
-                Voter portal
-              </p>
-              <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
-                Voter dashboard
-              </h1>
-              <p className="mt-2 text-sm leading-6 text-[#758078]">
-                Review your demo voter information and current election status.
-              </p>
-            </div>
+  const [user, setUser] =
+    useState<User | null>(null);
 
-            <div className="mb-7 rounded-2xl bg-[#f3f6f2] p-5 sm:p-6">
-              <p className="text-xs font-semibold tracking-[0.12em] text-[#728077] uppercase">
-                Voter name
-              </p>
-              <p className="mt-2 text-2xl font-semibold tracking-tight">
-                C**** K****
-              </p>
-              <p className="mt-1 text-xs text-[#89938c]">
-                Name is masked for this academic prototype.
-              </p>
-            </div>
+  const [isCheckingAuth, setIsCheckingAuth] =
+    useState(true);
 
-            <dl className="grid gap-3 sm:grid-cols-2">
-              {voterDetails.map(({ label, value }) => (
-                <div
-                  key={label}
-                  className="rounded-2xl border border-[#e8ece8] p-4 sm:p-5"
-                >
-                  <dt className="text-sm text-[#758078]">{label}</dt>
-                  <dd className="mt-2 flex items-center gap-2 font-semibold">
-                    {label === "Election status" && (
-                      <span
-                        aria-hidden="true"
-                        className="size-2 rounded-full bg-[#56816a]"
-                      />
-                    )}
-                    {value}
-                  </dd>
-                </div>
-              ))}
-            </dl>
+  useEffect(() => {
+    let isMounted = true;
 
-            <div className="mt-8 flex flex-col gap-3 border-t border-[#edf0ed] pt-7 sm:flex-row sm:items-center sm:justify-between">
-              <p className="max-w-md text-xs leading-5 text-[#89938c]">
-                This interface is an academic prototype and does not verify voter
-                identity or submit an official ballot.
-              </p>
-              <Link
-                href="/voter/ballot"
-                className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-[#173f32] px-6 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#245640] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#173f32]"
-              >
-                Start voting <span aria-hidden="true">→</span>
-              </Link>
-            </div>
-          </section>
+    const authenticationCodeVerified =
+      sessionStorage.getItem(
+        "authenticationCodeVerified"
+      );
 
-          <p className="mt-5 text-center text-xs text-[#89938c]">
-            For demonstration purposes only.
+    /*
+     * Firebase login and authentication-code login
+     * are separate checks.
+     *
+     * The user must have both:
+     * 1. A valid Firebase session.
+     * 2. A successful authentication-code session.
+     */
+    if (authenticationCodeVerified !== "true") {
+      router.replace("/login");
+      return;
+    }
+
+    const unsubscribe = onAuthStateChanged(
+      auth,
+      (currentUser) => {
+        if (!isMounted) {
+          return;
+        }
+
+        if (!currentUser) {
+          sessionStorage.removeItem(
+            "authenticationCodeVerified"
+          );
+
+          router.replace("/login");
+          return;
+        }
+
+        setUser(currentUser);
+        setIsCheckingAuth(false);
+      }
+    );
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, [router]);
+
+  async function handleLogout() {
+    try {
+      await signOut(auth);
+    } finally {
+      sessionStorage.removeItem(
+        "authenticationCodeVerified"
+      );
+
+      sessionStorage.removeItem(
+        "pendingAuthCodeUid"
+      );
+
+      sessionStorage.removeItem(
+        "pendingAuthCodeEmail"
+      );
+
+      router.replace("/login");
+    }
+  }
+
+  if (isCheckingAuth) {
+    return (
+      <main className="flex min-h-[60vh] items-center justify-center px-6 py-12">
+        <section className="w-full max-w-3xl rounded-lg border border-slate-300 bg-white p-8 text-center shadow-lg">
+          <h1 className={`${mainHeader} mb-2`}>
+            Voter Dashboard
+          </h1>
+
+          <p className="text-slate-600">
+            Checking your authentication...
           </p>
-        </div>
+        </section>
       </main>
-    </RequireAuth>
+    );
+  }
+
+  if (!user) {
+    return null;
+  }
+
+  return (
+    <main className="mx-auto max-w-5xl px-6 py-12">
+      <section className="rounded-lg border border-slate-300 bg-white p-8 shadow-lg">
+        <h1 className={`${mainHeader} mb-4`}>
+          Voter Dashboard
+        </h1>
+
+        <p className="mb-2">
+          Welcome, {user.email}.
+        </p>
+
+        <p className="mb-6 text-sm text-slate-600">
+          Your password and authentication code have
+          been accepted.
+        </p>
+
+        <div className="mb-6 rounded border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
+          You have successfully entered the voter
+          dashboard.
+        </div>
+
+        <div className="flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={() =>
+              router.push("/voter/ballot")
+            }
+            className={buttonStyle}
+          >
+            Go to ballot
+          </button>
+
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="rounded bg-slate-600 px-4 py-2 text-white hover:bg-slate-700"
+          >
+            Log out
+          </button>
+        </div>
+      </section>
+    </main>
   );
 }
