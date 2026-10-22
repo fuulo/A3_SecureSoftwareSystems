@@ -4,6 +4,7 @@ import "./globals.css";
 import DisclaimerBar from "../components/disclaimer";
 import Header from "../components/header";
 import Footer from "../components/footer";
+import SignOutOnLeave from "../components/signoutonleave";
 
 // Page font
 const googleSans = Google_Sans({ subsets: ["latin"] });
@@ -21,6 +22,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
+        <SignOutOnLeave />
         <div
           className={`${googleSans.className} relative min-h-screen bg-[#EAF3FC] text-[15px] text-[#222]`}
         >

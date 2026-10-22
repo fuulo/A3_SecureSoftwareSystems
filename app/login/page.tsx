@@ -1,16 +1,26 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import { mainHeader, buttonStyle } from "../../components/styles";
 import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
+import { mainHeader, buttonStyle } from "../../components/styles";
+import { useRouter } from "next/navigation";
+import { 
+  signInWithEmailAndPassword,
+  setPersistence,
+  inMemoryPersistence,
+} from "firebase/auth";
+import { auth } from "../../lib/firebase";
 
 export default function LoginPage() {
   const formRef = useRef<HTMLFormElement>(null);
+  const router = useRouter();
+  const [error, setError] = useState("");
 
   // Clear the form when the page is shown, including back/forward navigation
   useEffect(() => {
     function clearForm() {
       formRef.current?.reset();
+      setError("");
     }
 
     clearForm();
@@ -18,10 +28,27 @@ export default function LoginPage() {
     return () => window.removeEventListener("pageshow", clearForm);
   }, []);
 
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    // Stop the browser from sending the form by itself.
-    // The real login logic will be added here later.
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    const data = new FormData(event.currentTarget);
+    const email = String(data.get("id") ?? "").trim();
+    const password = String(data.get("password") ?? "");
+
+    if (!email || !password) {
+      setError("Please enter both your ID and password.");
+      return;
+    }
+
+    try {
+      await setPersistence(auth, inMemoryPersistence);
+      await signInWithEmailAndPassword(auth, email, password);
+      setError("");
+      router.push("/verify");
+    } catch {
+      // One general message for every failure, so it does not reveal which part was wrong
+      setError("ID or password is incorrect.");
+    }
   }
 
   return (
@@ -39,6 +66,7 @@ export default function LoginPage() {
               name="id"
               type="text"
               autoComplete="off"
+              autoFocus
               required
               onInvalid={(e) =>
                 e.currentTarget.setCustomValidity("Log In ID must not be left empty.")
@@ -64,6 +92,15 @@ export default function LoginPage() {
               className="w-full rounded border border-slate-400 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#1f538d]"
             />
           </div>
+
+          {error && (
+            <p
+              role="alert"
+              className="rounded border border-red-300 bg-red-50 px-3 py-2 text-[13px] text-red-700"
+            >
+              {error}
+            </p>
+          )}
 
           <button type="submit" className={buttonStyle}>
             Submit

@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import { mainHeader, buttonStyle } from "../../components/styles";
+import { useRouter } from "next/navigation";
 
 // Settings (change them here)
 const CODE_LENGTH = 6;
 const RESEND_SECONDS = 60;
+const NEXT_PAGE = "/voter/dashboard";
 
 export default function VerifyPage() {
   const [code, setCode] = useState("");
@@ -14,6 +16,7 @@ export default function VerifyPage() {
   const [message, setMessage] = useState("");
   const [secondsLeft, setSecondsLeft] = useState(RESEND_SECONDS);
   const [warning, setWarning] = useState("");
+  const router = useRouter();
 
   // Clear the form when the page is shown again by back/forward navigation
   useEffect(() => {
@@ -52,8 +55,10 @@ export default function VerifyPage() {
     }
     setError("");
 
-    setError("The code is incorrect or has expired.");
-    setCode("");
+    // In this demo we don't verify MFA
+    // setError("The code is incorrect or has expired.");
+    // setCode("");
+    router.push(NEXT_PAGE);
   }
 
   function handleResend() {
@@ -71,11 +76,13 @@ export default function VerifyPage() {
       <div className="w-full max-w-md rounded-lg border border-slate-300 bg-white p-8 shadow-lg">
         <h1 className={`${mainHeader} mb-2 text-center`}>Verify Your Identity</h1>
         <p className="mb-1 text-center">
-          Enter a {CODE_LENGTH}-digit verification code below. This demo does
-          not send or verify codes.
+          Enter a {CODE_LENGTH}-digit verification code below.
         </p>
-        <p className="mb-6 text-center">
-          Verification is simulated; no identity is verified.
+        <p className="mb-1 text-[10px] text-center">
+          (This demo does not send or verify codes.
+        </p>
+        <p className="mb-6 text-[10px] text-center">
+          Verification is simulated - no identity is verified.)
         </p>
 
         <form onSubmit={handleSubmit} noValidate className="space-y-5">
@@ -89,6 +96,7 @@ export default function VerifyPage() {
               type="text"
               inputMode="numeric"
               autoComplete="one-time-code"
+              autoFocus
               maxLength={CODE_LENGTH}
               value={code}
               onChange={(e) => {
