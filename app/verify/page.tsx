@@ -7,7 +7,6 @@ import { mainHeader, buttonStyle } from "../../components/styles";
 // Settings (change them here)
 const CODE_LENGTH = 6;
 const RESEND_SECONDS = 60;
-const EXPIRY_MINUTES = 1;
 
 export default function VerifyPage() {
   const [code, setCode] = useState("");
@@ -39,7 +38,7 @@ export default function VerifyPage() {
   // Hide the warning after 3 seconds
   useEffect(() => {
     if (!warning) return;
-    const timer = setTimeout (() => setWarning(""), 3000);
+    const timer = setTimeout(() => setWarning(""), 3000);
     return () => clearTimeout(timer);
   }, [warning]);
 
@@ -53,17 +52,9 @@ export default function VerifyPage() {
     }
     setError("");
 
-
-
-
-    // TODO: send the code to the backend to check it.
-    // On success, go to the voting page (needs: const router = useRouter();)
-    // On failure, show ONE general message, e.g.:
-    //   setError("The code is incorrect or has expired.");
-  
-
-
-}
+    setError("The code is incorrect or has expired.");
+    setCode("");
+  }
 
   function handleResend() {
     if (secondsLeft > 0) return;
@@ -71,15 +62,7 @@ export default function VerifyPage() {
     setCode("");
     setError("");
 
-
-
-
-    // TODO: backend to send a new code to [email / SMS].
-
-
-
-
-    setMessage("A new code has been sent to you.");
+    setMessage("Demo only: no verification code was sent.");
     setSecondsLeft(RESEND_SECONDS);
   }
 
@@ -88,10 +71,11 @@ export default function VerifyPage() {
       <div className="w-full max-w-md rounded-lg border border-slate-300 bg-white p-8 shadow-lg">
         <h1 className={`${mainHeader} mb-2 text-center`}>Verify Your Identity</h1>
         <p className="mb-1 text-center">
-          Enter the {CODE_LENGTH}-digit verification code we sent to you in the box below.
+          Enter a {CODE_LENGTH}-digit verification code below. This demo does
+          not send or verify codes.
         </p>
         <p className="mb-6 text-center">
-          The code expires in {EXPIRY_MINUTES} minute.
+          Verification is simulated; no identity is verified.
         </p>
 
         <form onSubmit={handleSubmit} noValidate className="space-y-5">
@@ -110,18 +94,18 @@ export default function VerifyPage() {
               onChange={(e) => {
                 const raw = e.target.value;
                 setCode(raw.replace(/\D/g, "").slice(0, CODE_LENGTH));
-                setWarning(/\D/.test(raw) ? "Only numbers are allowed." : "")
+                setWarning(/\D/.test(raw) ? "Only numbers are allowed." : "");
               }}
               aria-invalid={error ? true : undefined}
               className="w-full rounded border border-slate-400 px-3 py-2 text-center text-[28px] font-semibold tracking-[0.4em] focus:outline-none focus:ring-2 focus:ring-[#1f538d]"
             />
             {warning && (
-            <p
-              role = "status"
-              className = "mt-2 rounded border-amber-300 bg-amber-50 px-3 py-2 text-[13px] text-amber-800"
-            >
-              {warning}
-            </p>
+              <p
+                role="status"
+                className="mt-2 rounded border-amber-300 bg-amber-50 px-3 py-2 text-[13px] text-amber-800"
+              >
+                {warning}
+              </p>
             )}
           </div>
 

@@ -8,7 +8,7 @@ import { mainHeader,buttonStyle } from "../../components/styles";
 const CODE_LENGTH = 6;
 const MIN_PASSWORD_LENGTH = 6;
 
-type Step = "request" | "reset" | "done";
+type Step = "request" | "reset";
 
 // Reusable styles
 const inputStyle =
@@ -50,14 +50,8 @@ export default function ForgotPasswordPage() {
     }
     setError("");
 
-
-    // TODO: ask the backend to send a reset code to the email linked to this ID.
-    // Always show the SAME message below, whether or not the ID exists.
-    // This stops people from using this page to find out which IDs are valid.
-
-
     setMessage(
-      "If this ID is registered, a reset code has been sent to the email linked to it."
+      "If this ID is registered, reset instructions would be sent in a live service. This demo does not send email."
     );
     setStep("reset");
   }
@@ -82,18 +76,10 @@ export default function ForgotPasswordPage() {
     }
     setError("");
 
-
-
-    // TODO: send the ID, code and new password to the backend.
-    // On failure, show ONE general message, for example:
-    //   setError("The code is incorrect or has expired.");
-    // Only move to the "done" step after the backend confirms the reset.
-
-
+    setError("The code is incorrect or has expired.");
     setCode("");
     setNewPassword("");
     setConfirmPassword("");
-    setStep("done");
   }
 
   function handleChangeId() {
@@ -137,8 +123,8 @@ export default function ForgotPasswordPage() {
               Forgot Your Password?
             </h1>
             <p className="mb-6 text-center">
-              Enter your ID and we will send a reset code to the email linked
-              to it.
+              Enter your ID to see the simulated reset flow. This demo does not
+              send email or change passwords.
             </p>
 
             <form onSubmit={handleRequest} noValidate className="space-y-5">
@@ -174,8 +160,9 @@ export default function ForgotPasswordPage() {
               Reset Your Password
             </h1>
             <p className="mb-6 text-center">
-              Enter the {CODE_LENGTH}-digit code from your email, then choose a
-              new password with at least {MIN_PASSWORD_LENGTH} characters.
+              In a live service, enter the {CODE_LENGTH}-digit code and choose a
+              new password with at least {MIN_PASSWORD_LENGTH} characters. This
+              demo does not verify codes or change passwords.
             </p>
 
             <form onSubmit={handleReset} noValidate className="space-y-5">
@@ -245,41 +232,25 @@ export default function ForgotPasswordPage() {
           </>
         )}
 
-        {/* Step 3: done */}
-        {step === "done" && (
-          <>
-            <h1 className={`${mainHeader} mb-2 text-center`}>Password Reset</h1>
-            <p className="mb-6 text-center">
-              Your password has been changed. You can now log in with your new
-              password.
-            </p>
-            <Link href="/login" className={`${buttonStyle} block text-center`}>
-              Go to login
-            </Link>
-          </>
-        )}
-
         {/* Bottom links */}
-        {step !== "done" && (
-          <div
-            className={`mt-6 flex items-center ${
-              step === "reset" ? "justify-between" : "justify-center"
-            }`}
-          >
-            {step === "reset" && (
-              <button
-                type="button"
-                onClick={handleChangeId}
-                className={linkStyle}
-              >
-                Use a different ID
-              </button>
-            )}
-            <Link href="/login" className={linkStyle}>
-              Back to login
-            </Link>
-          </div>
-        )}
+        <div
+          className={`mt-6 flex items-center ${
+            step === "reset" ? "justify-between" : "justify-center"
+          }`}
+        >
+          {step === "reset" && (
+            <button
+              type="button"
+              onClick={handleChangeId}
+              className={linkStyle}
+            >
+              Use a different ID
+            </button>
+          )}
+          <Link href="/login" className={linkStyle}>
+            Back to login
+          </Link>
+        </div>
       </div>
     </div>
   );
