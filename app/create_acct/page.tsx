@@ -6,6 +6,7 @@ import { mainHeader, buttonStyle } from "../../components/styles";
 
 // Settings (change them here)
 const MIN_AGE = 18;
+const MIN_PASSWORD_LENGTH = 6;
 const GOV_ID_PATTERN = /^[A-Za-z0-9]{6,20}$/; // letters and numbers, 6 to 20 characters
 const MIN_ADDRESS_LENGTH = 10;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/; // something@something.something
@@ -19,6 +20,8 @@ const emptyForm = {
   govId: "",
   address: "",
   email: "",
+  password: "",
+  confirmPassword: "",
 };
 
 // Reusable styles
@@ -30,6 +33,15 @@ const linkStyle = "text-[13px] capitalize text-[#1b4779] hover:underline";
 function getAge(dob: string): number | null {
   const [year, month, day] = dob.split("-").map(Number);
   if (!year || !month || !day || year < 1900) return null;
+
+  const date = new Date(year, month - 1, day);
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return null;
+  }
 
   const today = new Date();
   let age = today.getFullYear() - year;
@@ -82,14 +94,16 @@ useEffect(() => {
   // Returns an error message, or an empty string if everything is fine
   function validate(): string {
     if (
-    !form.givenName.trim() ||
-    !form.surname.trim() ||
-    !form.dob ||
-    !form.govId.trim() ||
-    !form.address.trim() ||
-    !form.email.trim()
+      !form.givenName.trim() ||
+      !form.surname.trim() ||
+      !form.dob ||
+      !form.govId.trim() ||
+      !form.address.trim() ||
+      !form.email.trim() ||
+      !form.password ||
+      !form.confirmPassword
     ) {
-    return "Please fill in all the fields.";
+      return "Please fill in all the fields.";
     }
 
     const age = getAge(form.dob);
@@ -109,7 +123,14 @@ useEffect(() => {
     }
 
     if (!EMAIL_PATTERN.test(form.email.trim())) {
-    return "Please enter a valid email address.";
+      return "Please enter a valid email address.";
+    }
+
+    if (form.password.length < MIN_PASSWORD_LENGTH) {
+      return `Your password must have at least ${MIN_PASSWORD_LENGTH} characters.`;
+    }
+    if (form.password !== form.confirmPassword) {
+      return "The two passwords do not match.";
     }
 
     return "";
@@ -124,20 +145,6 @@ useEffect(() => {
       return;
     }
     setError("");
-
-
-
-
-    // TODO: send the details to the backend (over HTTPS) to create the account.
-    // - The backend must check everything again. Browser checks are only for convenience.
-    // - Never store the GovID as plain text (encrypt it or store a hash).
-    // - If the person already has an account, do not say so. Show the same
-    //   result as a new account, so this page cannot be used to find out who is registered.
-    // - On failure, show ONE general message, for example:
-    //     setError("We could not create your account. Please check your details.");
-    // Only move to the "done" step after the backend confirms.
-
-
 
     setForm(emptyForm);
     setStep("done");
@@ -258,21 +265,61 @@ useEffect(() => {
                     Email address
                 </label>
                 <input
-                    id="email"
-                    name="email"
-                    type="email"
-                    autoComplete="email"
-                    inputMode="email"
-                    maxLength={254}
-                    required
-                    aria-describedby="email-help"
-                    value={form.email}
-                    onChange={handleChange}
-                    className={inputStyle}
+                  id="email"
+                  name="email"
+                  type="email"
+                  autoComplete="email"
+                  inputMode="email"
+                  maxLength={254}
+                  required
+                  aria-describedby="email-help"
+                  value={form.email}
+                  onChange={handleChange}
+                  className={inputStyle}
                 />
                 <p id="email-help" className="mt-1 text-[13px] text-slate-600">
-                    We will send your verification and password reset codes to this address.
+                  In a live service, verification and password reset codes
+                  would be sent to this address.
                 </p>
+              </div>
+
+              <div>
+                <label htmlFor="password" className="mb-1 block font-semibold">
+                  Password
+                </label>
+                <input
+                  id="password"
+                  name="password"
+                  type="password"
+                  autoComplete="new-password"
+                  required
+                  value={form.password}
+                  onChange={handleChange}
+                  aria-describedby="password-help"
+                  className={inputStyle}
+                />
+                <p id="password-help" className="mt-1 text-[13px] text-slate-600">
+                  Use at least {MIN_PASSWORD_LENGTH} characters.
+                </p>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="confirmPassword"
+                  className="mb-1 block font-semibold"
+                >
+                  Confirm password
+                </label>
+                <input
+                  id="confirmPassword"
+                  name="confirmPassword"
+                  type="password"
+                  autoComplete="new-password"
+                  required
+                  value={form.confirmPassword}
+                  onChange={handleChange}
+                  className={inputStyle}
+                />
               </div>
 
               {error && (
@@ -300,12 +347,11 @@ useEffect(() => {
         {step === "done" && (
           <>
             <h1 className={`${mainHeader} mb-2 text-center`}>
-              Application Received
+              Demo Submission Complete
             </h1>
             <p className="mb-6 text-center">
-              Thank you. Your details have been submitted to AEC and will be checked
-              against the electoral database.<br />You can log in once your account is
-              ready.
+              This is a demonstration only. Your details were not sent or saved,
+              and no account was created.
             </p>
             <Link href="/login" className={`${buttonStyle} block text-center`}>
               Go to login
