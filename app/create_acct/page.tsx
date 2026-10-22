@@ -177,6 +177,7 @@ useEffect(() => {
                     type="text"
                     autoComplete="given-name"
                     maxLength={50}
+                    placeholder="e.g. Alex"
                     required
                     value={form.givenName}
                     onChange={handleChange}
@@ -194,6 +195,7 @@ useEffect(() => {
                     type="text"
                     autoComplete="family-name"
                     maxLength={50}
+                    placeholder="e.g. Smith"
                     required
                     value={form.surname}
                     onChange={handleChange}
@@ -218,6 +220,9 @@ useEffect(() => {
                     onChange={handleChange}
                     className={`${inputStyle} [color-scheme:light]`}
                     />
+                <p className="mt-1 text-[13px] text-slate-600">
+                  Select your date of birth using the date picker.
+                </p>
               </div>
 
               <div>
@@ -231,6 +236,7 @@ useEffect(() => {
                   autoComplete="off"
                   spellCheck={false}
                   maxLength={20}
+                  placeholder="e.g. A1234567"
                   required
                   aria-describedby="govId-help"
                   value={form.govId}
@@ -253,6 +259,7 @@ useEffect(() => {
                   rows={3}
                   autoComplete="street-address"
                   maxLength={200}
+                  placeholder="e.g. 10 Example Street, Sampletown"
                   required
                   value={form.address}
                   onChange={handleChange}
@@ -271,6 +278,7 @@ useEffect(() => {
                   autoComplete="email"
                   inputMode="email"
                   maxLength={254}
+                  placeholder="e.g. alex@example.com"
                   required
                   aria-describedby="email-help"
                   value={form.email}
@@ -292,6 +300,7 @@ useEffect(() => {
                   name="password"
                   type="password"
                   autoComplete="new-password"
+                  placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
                   required
                   value={form.password}
                   onChange={handleChange}
@@ -315,6 +324,7 @@ useEffect(() => {
                   name="confirmPassword"
                   type="password"
                   autoComplete="new-password"
+                  placeholder="Re-enter your password"
                   required
                   value={form.confirmPassword}
                   onChange={handleChange}
