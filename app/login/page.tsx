@@ -1,128 +1,95 @@
 "use client";
 
-import { FormEvent, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { signInWithEmailAndPassword } from "firebase/auth";
-import { auth } from "@/lib/firebase";
+import { useEffect, useRef, useState } from "react";
 import { mainHeader, buttonStyle } from "../../components/styles";
-
-const inputStyle =
-  "w-full rounded border border-slate-400 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#1f538d]";
-
-const linkStyle = "text-[13px] capitalize text-[#1b4779] hover:underline";
+import { useRouter } from "next/navigation";
+import { 
+  signInWithEmailAndPassword,
+  setPersistence,
+  inMemoryPersistence,
+} from "firebase/auth";
+import { auth } from "../../lib/firebase";
 
 export default function LoginPage() {
+  const formRef = useRef<HTMLFormElement>(null);
   const router = useRouter();
-
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  // Clear the form when the page is shown, including back/forward navigation
+  useEffect(() => {
+    function clearForm() {
+      formRef.current?.reset();
+      setError("");
+    }
+
+    clearForm();
+    window.addEventListener("pageshow", clearForm);
+    return () => window.removeEventListener("pageshow", clearForm);
+  }, []);
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    setError("");
+    const data = new FormData(event.currentTarget);
+    const email = String(data.get("id") ?? "").trim();
+    const password = String(data.get("password") ?? "");
 
-    if (!email.trim()) {
-      setError("Please enter your email address.");
+    if (!email || !password) {
+      setError("Please enter both your ID and password.");
       return;
     }
-
-    if (!password) {
-      setError("Please enter your password.");
-      return;
-    }
-
-    setIsSubmitting(true);
 
     try {
-      await signInWithEmailAndPassword(auth, email.trim(), password);
-
-      router.push("/voter/dashboard");
-    } catch (firebaseError: unknown) {
-      console.error(firebaseError);
-
-      if (
-        typeof firebaseError === "object" &&
-        firebaseError !== null &&
-        "code" in firebaseError
-      ) {
-        const code = String(firebaseError.code);
-
-        if (
-          code === "auth/invalid-credential" ||
-          code === "auth/wrong-password" ||
-          code === "auth/user-not-found"
-        ) {
-          setError("Incorrect email or password.");
-        } else if (code === "auth/invalid-email") {
-          setError("Please enter a valid email address.");
-        } else if (code === "auth/user-disabled") {
-          setError("This account has been disabled.");
-        } else if (code === "auth/too-many-requests") {
-          setError("Too many attempts. Please try again later.");
-        } else {
-          setError("Unable to sign in. Please try again.");
-        }
-      } else {
-        setError("Unable to sign in. Please try again.");
-      }
-    } finally {
-      setIsSubmitting(false);
+      await setPersistence(auth, inMemoryPersistence);
+      await signInWithEmailAndPassword(auth, email, password);
+      setError("");
+      router.push("/verify");
+    } catch {
+      // One general message for every failure, so it does not reveal which part was wrong
+      setError("ID or password is incorrect.");
     }
   }
 
   return (
     <div className="flex min-h-[60vh] items-center justify-center px-6 py-12">
       <div className="w-full max-w-md rounded-lg border border-slate-300 bg-white p-8 shadow-lg">
-        <h1 className={`${mainHeader} mb-2 text-center`}>Login</h1>
+        <h1 className={`${mainHeader} mb-6 text-center`}>Enter Your Login Details</h1>
 
-        <p className="mb-6 text-center">
-          Sign in to your voter account.
-        </p>
-
-        <form onSubmit={handleSubmit} noValidate className="space-y-5">
+        <form ref={formRef} onSubmit={handleSubmit} className="space-y-5">
           <div>
-            <label htmlFor="email" className="mb-1 block font-semibold">
-              Email address
+            <label htmlFor="id" className="mb-1 block font-semibold text-[18px]">
+              Log In ID
             </label>
-
             <input
-              id="email"
-              name="email"
-              type="email"
-              autoComplete="email"
-              inputMode="email"
-              maxLength={254}
+              id="id"
+              name="id"
+              type="text"
+              autoComplete="off"
+              autoFocus
               required
-              value={email}
-              onChange={(event) => {
-                setEmail(event.target.value);
-                setError("");
-              }}
-              className={inputStyle}
+              onInvalid={(e) =>
+                e.currentTarget.setCustomValidity("Log In ID must not be left empty.")
+              }
+              onInput={(e) => e.currentTarget.setCustomValidity("")}
+              className="w-full rounded border border-slate-400 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#1f538d]"
             />
           </div>
 
           <div>
-            <label htmlFor="password" className="mb-1 block font-semibold">
+            <label htmlFor="password" className="mb-1 block font-semibold text-[18px]">
               Password
             </label>
-
             <input
               id="password"
               name="password"
               type="password"
-              autoComplete="current-password"
+              autoComplete="new-password"
               required
-              value={password}
-              onChange={(event) => {
-                setPassword(event.target.value);
-                setError("");
-              }}
-              className={inputStyle}
+              onInvalid={(e) =>
+                e.currentTarget.setCustomValidity("Password must not be left empty.")
+              }
+              className="w-full rounded border border-slate-400 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#1f538d]"
             />
           </div>
 
@@ -135,20 +102,32 @@ export default function LoginPage() {
             </p>
           )}
 
-          <button
-            type="submit"
-            disabled={isSubmitting}
-            className={`${buttonStyle} ${
-              isSubmitting ? "cursor-not-allowed opacity-60" : ""
-            }`}
-          >
-            {isSubmitting ? "Signing in..." : "Sign in"}
+          <button type="submit" className={buttonStyle}>
+            Submit
           </button>
         </form>
 
         <div className="mt-6 text-center">
-          <Link href="/create_acct" className={linkStyle}>
-            Create an account
+          <Link
+            href="/create_acct"
+            className="text-[18px] text-[#1b4779] hover:underline"
+          >
+            No Account Yet? Click Here to Create One!
+          </Link>
+        </div>
+
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
+          <Link
+            href="/forgot_pw"
+            className="text-[13px] capitalize text-orange-700 hover:underline"
+          >
+            Forgot password?
+          </Link>
+          <Link
+            href="/"
+            className="text-[13px] capitalize text-[#1b4779] hover:underline"
+          >
+            Back to home page
           </Link>
         </div>
       </div>
