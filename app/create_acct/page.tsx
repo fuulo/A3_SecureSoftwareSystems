@@ -4,11 +4,11 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { createUserWithEmailAndPassword } from "firebase/auth";
 import {
+  collection,
   doc,
   serverTimestamp,
   setDoc,
 } from "firebase/firestore";
-import { useRouter } from "next/navigation";
 import { auth, db } from "@/lib/firebase";
 import {
   mainHeader,
@@ -30,6 +30,8 @@ const EMAIL_PATTERN =
 
 const ADDRESS_LETTER_PATTERN =
   /[A-Za-zÀ-ÖØ-öø-ÿ]/;
+const POSTCODE_PATTERN = /^\d{4}$/;
+const AU_STATES = ["ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA"];
 
 type Step = "form" | "done";
 
@@ -38,7 +40,10 @@ type FormData = {
   surname: string;
   dob: string;
   govId: string;
-  address: string;
+  street: string;
+  suburb: string;
+  state: string;
+  postcode: string;
   email: string;
   password: string;
   confirmPassword: string;
@@ -53,7 +58,10 @@ const emptyForm: FormData = {
   surname: "",
   dob: "",
   govId: "",
-  address: "",
+  street: "",
+  suburb: "",
+  state: "",
+  postcode: "",
   email: "",
   password: "",
   confirmPassword: "",
@@ -158,7 +166,6 @@ function getFirebaseErrorMessage(
 }
 
 export default function CreateAccountPage() {
-  const router = useRouter();
   const dobRef = useRef<HTMLInputElement>(null);
 
   const [step, setStep] =
@@ -182,7 +189,7 @@ export default function CreateAccountPage() {
 
   function handleChange(
     event: React.ChangeEvent<
-      HTMLInputElement | HTMLTextAreaElement
+      HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
     >
   ) {
     const { name, value } = event.target;
@@ -255,24 +262,18 @@ export default function CreateAccountPage() {
         "GovID must contain only letters and numbers, between 6 and 20 characters.";
     }
 
-    const trimmedAddress = form.address.trim();
-
-    if (!trimmedAddress) {
-      errors.address =
-        "Please enter your residential address.";
-    } else if (
-      trimmedAddress.length <
-      MIN_ADDRESS_LENGTH
-    ) {
-      errors.address =
-        "Please enter your full residential address.";
-    } else if (
-      !ADDRESS_LETTER_PATTERN.test(
-        trimmedAddress
-      )
-    ) {
-      errors.address =
-        "Please enter a valid residential address.";
+    if (form.street.trim().length < MIN_ADDRESS_LENGTH ||
+        !ADDRESS_LETTER_PATTERN.test(form.street.trim())) {
+      errors.street = "Please enter a valid street address.";
+    }
+    if (!form.suburb.trim() || !ADDRESS_LETTER_PATTERN.test(form.suburb.trim())) {
+      errors.suburb = "Please enter a valid suburb.";
+    }
+    if (!AU_STATES.includes(form.state)) {
+      errors.state = "Please select an Australian state or territory.";
+    }
+    if (!POSTCODE_PATTERN.test(form.postcode.trim())) {
+      errors.postcode = "Postcode must contain exactly four digits.";
     }
 
     if (!form.email.trim()) {
@@ -339,22 +340,33 @@ export default function CreateAccountPage() {
           form.password
         );
 
+      const voterRef = doc(collection(db, "voters"));
       await setDoc(
-        doc(db, "users", credential.user.uid),
+        voterRef,
         {
-          givenName: form.givenName.trim(),
+          authUid: credential.user.uid,
+          givenNames: form.givenName.trim(),
+          givenNamesLower: form.givenName.trim().toLocaleLowerCase(),
           surname: form.surname.trim(),
-          dob: form.dob,
+          surnameLower: form.surname.trim().toLocaleLowerCase(),
+          dateOfBirth: form.dob,
+          email,
           govId: form.govId
             .replace(/\s/g, "")
             .trim(),
-          address: form.address.trim(),
-          email,
-          role: "voter",
-          hasVoted: false,
-          enrolmentStatus: "not-enrolled",
-          eligibilityStatus: "pending",
+          address: {
+            street: form.street.trim(),
+            suburb: form.suburb.trim(),
+            state: form.state,
+            postcode: form.postcode.trim(),
+          },
+          divisionId: null,
+          stateId: form.state,
+          enrolledBy: "self",
+          enrolmentStatus: "pending",
+          voted: false,
           createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
         }
       );
 
@@ -541,35 +553,34 @@ export default function CreateAccountPage() {
             </p>
           </div>
 
-          <div>
-            <label
-              htmlFor="address"
-              className="mb-1 block font-semibold"
-            >
-              Residential address
-            </label>
-
-            <textarea
-              id="address"
-              name="address"
-              autoComplete="street-address"
-              required
-              rows={3}
-              value={form.address}
-              onChange={handleChange}
-              className={`${inputStyle} ${
-                fieldErrors.address
-                  ? "border-red-500"
-                  : ""
-              }`}
-            />
-
-            {fieldErrors.address && (
-              <p className="mt-1 text-xs text-red-700">
-                {fieldErrors.address}
-              </p>
-            )}
-          </div>
+          <fieldset className="space-y-4">
+            <legend className="mb-2 font-semibold">Residential address</legend>
+            <div>
+              <label htmlFor="street" className="mb-1 block font-semibold">Street address</label>
+              <input id="street" name="street" autoComplete="address-line1" required value={form.street} onChange={handleChange} className={`${inputStyle} ${fieldErrors.street ? "border-red-500" : ""}`} />
+              {fieldErrors.street && <p role="alert" className="mt-1 text-xs text-red-700">{fieldErrors.street}</p>}
+            </div>
+            <div className="grid gap-5 md:grid-cols-2">
+              <div>
+                <label htmlFor="suburb" className="mb-1 block font-semibold">Suburb</label>
+                <input id="suburb" name="suburb" autoComplete="address-level2" required value={form.suburb} onChange={handleChange} className={`${inputStyle} ${fieldErrors.suburb ? "border-red-500" : ""}`} />
+                {fieldErrors.suburb && <p role="alert" className="mt-1 text-xs text-red-700">{fieldErrors.suburb}</p>}
+              </div>
+              <div>
+                <label htmlFor="state" className="mb-1 block font-semibold">State or territory</label>
+                <select id="state" name="state" autoComplete="address-level1" required value={form.state} onChange={handleChange} className={`${inputStyle} ${fieldErrors.state ? "border-red-500" : ""}`}>
+                  <option value="">Select a state or territory</option>
+                  {AU_STATES.map((state) => <option key={state} value={state}>{state}</option>)}
+                </select>
+                {fieldErrors.state && <p role="alert" className="mt-1 text-xs text-red-700">{fieldErrors.state}</p>}
+              </div>
+            </div>
+            <div>
+              <label htmlFor="postcode" className="mb-1 block font-semibold">Postcode</label>
+              <input id="postcode" name="postcode" inputMode="numeric" autoComplete="postal-code" maxLength={4} required value={form.postcode} onChange={handleChange} className={`${inputStyle} ${fieldErrors.postcode ? "border-red-500" : ""}`} />
+              {fieldErrors.postcode && <p role="alert" className="mt-1 text-xs text-red-700">{fieldErrors.postcode}</p>}
+            </div>
+          </fieldset>
 
           <div>
             <label

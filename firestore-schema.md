@@ -40,7 +40,10 @@
 
 ## Config
 
-### `config/allowedIpRanges/{locationId}`
+The allowlist uses the `ranges` subcollection under the `allowedIpRanges`
+configuration document (`config/allowedIpRanges/ranges/{locationId}`).
+
+### `config/allowedIpRanges/ranges/{locationId}`
 
 ```jsonc
 {
@@ -83,24 +86,33 @@
 {
   "authUid": "xyz789",
   "givenNames": "...",
+  "givenNamesLower": "lowercase given names for staff lookup",
   "surname": "...",
+  "surnameLower": "lowercase surname for staff lookup",
   "govId": "...",
   "dateOfBirth": "1990-05-01",
   "enrolmentStatus": "enrolled | pending | removed",
   "enrolledBy": "self | staffId",
   "address": {
     "street": "...",
+    "unit": "...",
     "suburb": "...",
     "state": "VIC",
     "postcode": "3000"
   },
-  "divisionId": "div_melbourne",
+  "email": "voter@example.org",
+  "divisionId": "div_melbourne | null while pending",
   "stateId": "VIC",
+  "rejectionReason": "optional staff rejection reason",
+  "reviewedBy": "optional staffId",
+  "reviewedAt": "optional timestamp",
   "createdAt": "timestamp",
   "updatedAt": "timestamp",
   "voted": true | false
 }
 ```
+
+Self-service registration creates a pending voter document with `enrolledBy: "self"`, `divisionId: null`, `stateId` copied from the structured address, and `voted: false`. Staff rejection is recorded as `enrolmentStatus: "removed"` with `rejectionReason`, `reviewedBy`, and `reviewedAt`; this avoids conflating a rejection with an ordinary later removal in the audit history.
 
 ### `voters/{voterId}/addressHistory/{changeId}`
 
@@ -249,9 +261,15 @@
   "groupId": "group_A",            // senate only (null if ungrouped)
   "ballotPosition": 14,            // order printed on ballot
   "enteredBy": "staffId",
-  "excluded": false                // manual exclusion for Court of Disputed Returns
+  "excluded": false,               // manual exclusion for Court of Disputed Returns
+  "withdrawn": false,
+  "withdrawnAt": null,
+  "withdrawnBy": null,
+  "withdrawalReason": null
 }
 ```
+
+Candidate withdrawals are soft state changes. A withdrawn candidate is never deleted; ballot rendering and counting must exclude both `withdrawn: true` and `excluded: true`.
 
 **Example entry (senate)**
 

@@ -5,13 +5,11 @@ import { usePathname } from "next/navigation";
 import { signOut } from "firebase/auth";
 import { auth } from "../lib/firebase";
 
-// Pages that belong to the voter area. The user can move between them
-// without logging in again. Add the vote page here if it is outside /voter.
-const VOTER_AREA = ["/voter"];
+const PROTECTED_AREAS = ["/voter", "/staff"];
 
-function inVoterArea(path: string | null) {
+function inProtectedArea(path: string | null) {
   if (!path) return false;
-  return VOTER_AREA.some((p) => path === p || path.startsWith(`${p}/`));
+  return PROTECTED_AREAS.some((p) => path === p || path.startsWith(`${p}/`));
 }
 
 export default function SignOutOnLeave() {
@@ -19,8 +17,7 @@ export default function SignOutOnLeave() {
   const previous = useRef<string | null>(pathname);
 
   useEffect(() => {
-    // Sign out when the user moves from the voter area to any other page
-    if (inVoterArea(previous.current) && !inVoterArea(pathname)) {
+    if (inProtectedArea(previous.current) && !inProtectedArea(pathname)) {
       signOut(auth).catch(() => {});
     }
     previous.current = pathname;

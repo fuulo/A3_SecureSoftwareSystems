@@ -1,0 +1,68 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    match /voters/{voterId} {
+      allow get, list: if signedIn() && resource.data.authUid == request.auth.uid;
+      allow create: if signedIn()
+        && request.resource.data.keys().hasAll([
+          'authUid', 'givenNames', 'surname', 'govId', 'dateOfBirth',
+          'enrolmentStatus', 'enrolledBy', 'address', 'voted'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'authUid', 'givenNames', 'givenNamesLower', 'surname', 'surnameLower',
+          'govId', 'dateOfBirth', 'email', 'enrolmentStatus', 'enrolledBy', 'address',
+          'divisionId', 'stateId', 'voted', 'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.authUid == request.auth.uid
+        && request.resource.data.enrolmentStatus == 'pending'
+        && request.resource.data.enrolledBy == 'self'
+        && request.resource.data.voted == false
+        && request.resource.data.govId is string
+        && request.resource.data.govId.matches('^[A-Za-z0-9]{6,20}$')
+        && request.resource.data.dateOfBirth.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && request.resource.data.email is string
+        && request.resource.data.divisionId == null
+        && request.resource.data.stateId == request.resource.data.address.state
+        && request.resource.data.address is map
+        && request.resource.data.address.keys().hasAll(['street', 'suburb', 'state', 'postcode'])
+        && request.resource.data.address.keys().hasOnly(['street', 'unit', 'suburb', 'state', 'postcode'])
+        && request.resource.data.address.state in ['ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA']
+        && request.resource.data.address.postcode.matches('^[0-9]{4}$');
+      allow update, delete: if false;
+
+      match /addressHistory/{changeId} {
+        allow read, write: if false;
+      }
+    }
+
+    match /staff/{staffId} {
+      allow read, write: if false;
+    }
+    match /config/{document=**} {
+      allow read, write: if false;
+    }
+    match /auditLogs/{logId} {
+      allow read, write: if false;
+    }
+    match /auditMeta/{document=**} {
+      allow read, write: if false;
+    }
+    match /govIdIndex/{document=**} {
+      allow read, write: if false;
+    }
+    match /elections/{electionId} {
+      allow read, write: if false;
+    }
+    match /elections/{electionId}/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

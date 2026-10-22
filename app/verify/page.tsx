@@ -1,16 +1,15 @@
 "use client";
 
-import Link from "next/link";
+// The six-digit code is a demo placeholder and is not real second-factor security.
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { ApiError, getStaffProfile } from "@/lib/api";
 import {
   mainHeader,
   buttonStyle,
 } from "@/components/styles";
 
 const CODE_LENGTH = 6;
-const NEXT_PAGE = "/voter/dashboard";
-
 const inputStyle =
   "w-full rounded border border-slate-400 px-3 py-2 text-center text-[28px] font-semibold tracking-[0.4em] focus:outline-none focus:ring-2 focus:ring-[#1f538d]";
 
@@ -101,8 +100,25 @@ export default function AuthenticationCodePage() {
         "true"
       );
 
-      router.push(NEXT_PAGE);
+      try {
+        const staff = await getStaffProfile();
+        router.push(staff.role === "admin"
+          ? "/staff/admin/dashboard"
+          : "/staff/employee/dashboard");
+      } catch (profileError) {
+        if (profileError instanceof ApiError &&
+            (profileError.status === 403 || profileError.status === 404)) {
+          router.push("/voter/dashboard");
+        } else {
+          throw profileError;
+        }
+      }
     } catch (verificationError) {
+      if (verificationError instanceof ApiError && verificationError.status === 401) {
+        sessionStorage.removeItem("authenticationCodeVerified");
+        router.replace("/login");
+        return;
+      }
       console.error(verificationError);
       setError(
         "The authentication code could not be processed."
