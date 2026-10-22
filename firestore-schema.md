@@ -84,6 +84,7 @@
   "authUid": "xyz789",
   "givenNames": "...",
   "surname": "...",
+  "govId": "...",
   "dateOfBirth": "1990-05-01",
   "enrolmentStatus": "enrolled | pending | removed",
   "enrolledBy": "self | staffId",
