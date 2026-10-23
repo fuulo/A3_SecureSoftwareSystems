@@ -86,7 +86,7 @@ export default function VoterDashboardPage() {
         "pendingAuthCodeEmail"
       );
 
-      router.replace("/login");
+      window.location.replace("/");
     }
   }
 
