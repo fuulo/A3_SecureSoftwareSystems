@@ -27,7 +27,7 @@ Install Python dependencies and configure `backend/.env` (do not commit credenti
 
 ```dotenv
 GOOGLE_APPLICATION_CREDENTIALS=C:\path\to\service-account.json
-FIREBASE_PROJECT_ID=your-firebase-project
+FIREBASE_PROJECT_ID=a3-voting-system-dev
 ALLOWED_ORIGINS=http://localhost:3000
 ```
 
