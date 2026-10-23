@@ -256,11 +256,13 @@ def lookup_voter(body: VoterLookup, request: Request,
     if by_id:
         snapshots = list(db.collection("voters").where("govId", "==", body.govId).limit(25).stream())
     else:
-        surname = body.surname.strip().lower()
-        given = body.givenNames.strip().lower()
-        query = (db.collection("voters").where("surnameLower", ">=", surname)
-                 .where("surnameLower", "<=", surname + "\uf8ff").order_by("surnameLower").limit(100))
-        snapshots = [item for item in query.stream() if (item.get("givenNamesLower") or "").startswith(given)][:25]
+        # Case-sensitive prefix search on the stored names (no separate lowercase fields needed).
+        surname = body.surname.strip()
+        given = body.givenNames.strip()
+        query = (db.collection("voters").where("surname", ">=", surname)
+                 .where("surname", "<=", surname + "\uf8ff").order_by("surname").limit(100))
+        snapshots = [item for item in query.stream()
+                     if str((item.to_dict() or {}).get("givenNames") or "").startswith(given)][:25]
     transaction = db.transaction()
 
     @firestore.transactional

@@ -48,15 +48,20 @@ def _assert_scope(candidate: dict[str, Any], staff: dict[str, Any],
 def _validate_candidate(data: dict[str, Any], election_ref: Any, staff: dict[str, Any],
                         tx: Any | None = None) -> dict[str, Any]:
     if data.get("chamber") == "house":
-        if not data.get("divisionId") or data.get("stateId") is not None or data.get("groupId") is not None:
+        if not data.get("divisionId") or data.get("groupId") is not None:
             raise HTTPException(status_code=422, detail="House candidate requires only a division")
         division_ref = election_ref.collection("divisions").document(data["divisionId"])
         division_snapshot = division_ref.get(transaction=tx)
         if not division_snapshot.exists:
             raise HTTPException(status_code=422, detail="Division does not exist")
-        if division_snapshot.get("stateId") != staff.get("stateId"):
+        division_state = (division_snapshot.to_dict() or {}).get("stateId")
+        if division_state != staff.get("stateId"):
             raise HTTPException(status_code=403, detail="Division is outside your state")
-        data["stateId"] = division_snapshot.get("stateId")
+        # stateId is derived from the division. Accept an absent value, or one matching the
+        # division, so already-normalised data (re-validation, edits) passes again.
+        if data.get("stateId") not in (None, division_state):
+            raise HTTPException(status_code=422, detail="House candidate requires only a division")
+        data["stateId"] = division_state
     else:
         if not data.get("stateId") or data.get("divisionId") is not None:
             raise HTTPException(status_code=422, detail="Senate candidate requires only a state")

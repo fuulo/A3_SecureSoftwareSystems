@@ -92,6 +92,8 @@ export default function StaffTools() {
         setDivisions(list);
       } else if (path.endsWith("/voters/lookup")) {
         setRows([]);
+      } else if (path.endsWith("/voters/new")) {
+        setDivisions(await apiRequest<Row[]>("/api/elections/active/divisions"));
       } else if (path.includes("/voters/") && voterId) {
         const result = await apiRequest<Row>(`/api/employee/voters/${encodeURIComponent(voterId)}`);
         setRecord(result);
@@ -215,6 +217,10 @@ export default function StaffTools() {
     };
     if (!/^[A-Za-z0-9]{6,20}$/.test(payload.govId ?? "")) {
       setError("Government ID must contain 6 to 20 letters or digits.");
+      return;
+    }
+    if (!divisions.some((d) => text(d, "divisionId") === payload.divisionId && text(d, "stateId") === payload.state)) {
+      setError("Select a division that belongs to the chosen state.");
       return;
     }
     await run(() => sendJson("/api/employee/voters", "POST", payload), "Voter account created. Password setup instructions were sent.");
@@ -454,7 +460,9 @@ export default function StaffTools() {
         {formField("email", "Email", "email")}{formField("street", "Street address")}{formField("suburb", "Suburb")}
         {selectField("state", "State", ["ACT","NSW","NT","QLD","SA","TAS","VIC","WA"].map((v) => ({ value: v, label: v })))}
         {formField("postcode", "Postcode")}
-        {selectField("divisionId", "Division", divisions.map((v) => ({ value: text(v, "divisionId"), label: text(v, "name") })))}
+        {selectField("divisionId", "Division", divisions
+          .filter((v) => !form.state || text(v, "stateId") === form.state)
+          .map((v) => ({ value: text(v, "divisionId"), label: text(v, "name") })))}
         <button className={`${buttonStyle} sm:col-span-2 disabled:opacity-50`} disabled={busy}>{busy ? "Registering..." : "Register voter"}</button>
       </form>
     </>;
