@@ -1,0 +1,27 @@
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+def _as_bool(value: str | None, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID")
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+    if origin.strip()
+]
+TRUST_PROXY_HEADERS = _as_bool(os.getenv("TRUST_PROXY_HEADERS"))
+SMTP_HOST = os.getenv("SMTP_HOST")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL")
+SMTP_USE_SSL = _as_bool(os.getenv("SMTP_USE_SSL"))

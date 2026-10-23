@@ -104,7 +104,11 @@ export default function LoginPage() {
         cleanEmail
       );
 
-      router.push("/verify");
+      // Empty the input boxes before leaving this page
+      setEmail("");
+      setPassword("");
+
+      router.replace("/verify");
     } catch (firebaseError) {
       console.error(firebaseError);
       setError(
@@ -143,7 +147,8 @@ export default function LoginPage() {
               id="email"
               name="email"
               type="email"
-              autoComplete="email"
+              autoComplete="off"
+              autoFocus
               required
               value={email}
               onChange={(event) => {
@@ -166,7 +171,7 @@ export default function LoginPage() {
               id="password"
               name="password"
               type="password"
-              autoComplete="current-password"
+              autoComplete="new-password"
               required
               value={password}
               onChange={(event) => {

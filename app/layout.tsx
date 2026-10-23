@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
+import { Suspense } from "react";
 import "./globals.css";
 import DisclaimerBar from "../components/disclaimer";
 import Header from "../components/header";
@@ -25,7 +26,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <SignOutOnLeave />
+        <Suspense fallback={null}>
+          <SignOutOnLeave />
+        </Suspense>
         <div
           className={`${inter.className} relative min-h-screen bg-[#EAF3FC] text-[15px] text-[#222]`}
         >
@@ -39,7 +42,11 @@ export default function RootLayout({
           <div className="relative z-10 flex min-h-screen flex-col">
             <DisclaimerBar />
             <Header />
-            <div className="flex-1">{children}</div>
+            <div className="flex-1">
+              <Suspense fallback={<div className="min-h-[40vh]" />}>
+                {children}
+              </Suspense>
+            </div>
             <Footer />
           </div>
         </div>
