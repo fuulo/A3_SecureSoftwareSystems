@@ -29,13 +29,6 @@ Install Python dependencies and configure `backend/.env` (do not commit credenti
 GOOGLE_APPLICATION_CREDENTIALS=C:\path\to\service-account.json
 FIREBASE_PROJECT_ID=your-firebase-project
 ALLOWED_ORIGINS=http://localhost:3000
-TRUST_PROXY_HEADERS=false
-SMTP_HOST=smtp.example.org
-SMTP_PORT=587
-SMTP_USERNAME=...
-SMTP_PASSWORD=...
-SMTP_FROM_EMAIL=no-reply@example.org
-SMTP_USE_SSL=false
 ```
 
 Start the API from the repository root:
