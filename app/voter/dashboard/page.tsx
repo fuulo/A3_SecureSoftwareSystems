@@ -7,7 +7,9 @@ import {
   signOut,
   User,
 } from "firebase/auth";
+import { collection, getDocs, query, where } from "firebase/firestore";
 import { auth } from "@/lib/firebase";
+import { db } from "@/lib/firebase";
 import {
   buttonStyle,
   mainHeader,
@@ -21,6 +23,12 @@ export default function VoterDashboardPage() {
 
   const [isCheckingAuth, setIsCheckingAuth] =
     useState(true);
+  const [voterProfile, setVoterProfile] = useState<{
+    givenNames?: string;
+    surname?: string;
+    enrolmentStatus?: string;
+  } | null>(null);
+  const [profileError, setProfileError] = useState("");
 
   useEffect(() => {
     let isMounted = true;
@@ -45,7 +53,7 @@ export default function VoterDashboardPage() {
 
     const unsubscribe = onAuthStateChanged(
       auth,
-      (currentUser) => {
+      async (currentUser) => {
         if (!isMounted) {
           return;
         }
@@ -60,6 +68,23 @@ export default function VoterDashboardPage() {
         }
 
         setUser(currentUser);
+        try {
+          const voterQuery = query(
+            collection(db, "voters"),
+            where("authUid", "==", currentUser.uid),
+          );
+          const voterSnapshot = await getDocs(voterQuery);
+          if (!isMounted) return;
+          const voter = voterSnapshot.docs[0]?.data();
+          setVoterProfile(voter ? {
+            givenNames: voter.givenNames,
+            surname: voter.surname,
+            enrolmentStatus: voter.enrolmentStatus,
+          } : null);
+        } catch {
+          if (!isMounted) return;
+          setProfileError("Unable to load your voter profile. Please refresh the page.");
+        }
         setIsCheckingAuth(false);
       }
     );
@@ -118,8 +143,15 @@ export default function VoterDashboardPage() {
         </h1>
 
         <p className="mb-2">
-          Welcome, {user.email}.
+          Welcome, {voterProfile ? `${voterProfile.givenNames ?? ""} ${voterProfile.surname ?? ""}`.trim() : user.email}.
         </p>
+
+        {voterProfile?.enrolmentStatus === "pending" && (
+          <p className="mb-4 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+            Your voter enrolment is pending staff review.
+          </p>
+        )}
+        {profileError && <p role="alert" className="mb-4 rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">{profileError}</p>}
 
         <p className="mb-6 text-sm text-slate-600">
           Your password and authentication code have
