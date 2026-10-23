@@ -119,3 +119,25 @@ class CandidateEdit(StrictModel):
 
 class Withdrawal(StrictModel):
     reason: Annotated[str, Field(min_length=1, max_length=500)]
+
+
+BallotChoice = Annotated[str, Field(min_length=1, max_length=120)]
+
+
+class HouseBallotInput(StrictModel):
+    # Candidate IDs in preference order; index 0 = preference 1. Empty = blank ballot.
+    preferences: Annotated[list[BallotChoice], Field(max_length=100)]
+
+
+class SenateBallotInput(StrictModel):
+    aboveTheLine: Annotated[list[BallotChoice], Field(max_length=100)] = []
+    belowTheLine: Annotated[list[BallotChoice], Field(max_length=500)] = []
+
+
+class BallotSubmission(StrictModel):
+    house: HouseBallotInput
+    senate: SenateBallotInput
+
+
+class ReceiptCheck(StrictModel):
+    receipt: Annotated[str, Field(min_length=1, max_length=40)]

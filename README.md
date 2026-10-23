@@ -64,6 +64,121 @@ Run the Python tests with:
 python -m pytest backend/tests
 ```
 
+## Results, receipts and verification
+
+| Endpoint | Who | Purpose |
+| --- | --- | --- |
+| `POST /api/voter/ballots` | Enrolled voter (Firebase token) | Records House and Senate ballots and returns a one-time receipt code |
+| `POST /api/admin/elections/{id}/results/publish` | Admin | Counts a finalised election and freezes the result package |
+| `GET /api/public/results` | Anyone | Latest published results and their SHA-256 fingerprint |
+| `GET /api/public/results/package.json` | Anyone | Downloadable result package (the exact published bytes) |
+| `POST /api/public/receipts/verify` | Anyone (10 per minute) | Confirms a receipt's ballot was recorded, never its contents |
+
+### Validate the three public pages from the frontend
+
+The Published Results (`/results`), Verify receipt (`/verify-receipt`) and
+Verify result package (`/verify-package`) pages need no sign-in. They read
+everything from the API, so the steps below exercise the backend through the
+real pages.
+
+#### 1. Set up
+
+1. Install the API dependencies into a virtual environment (once):
+
+   ```powershell
+   python -m venv .venv
+   .venv\Scripts\python -m pip install -r backend/requirements.txt
+   ```
+
+2. Create `backend/.env` as described in [Run the staff API](#run-the-staff-api).
+   `GOOGLE_APPLICATION_CREDENTIALS` must point to a service-account key for the
+   project (Firebase console → Project settings → Service accounts → Generate
+   new private key). Keep the key outside the repository and never commit it.
+3. Make sure `.env.local` contains `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`.
+
+#### 2. Seed a demo election
+
+`backend/seed_demo_results.py` creates a demo election, enrols demo voters,
+casts their ballots through the same code as `POST /api/voter/ballots`,
+finalises the election and publishes the results through the same code as the
+admin publish endpoint. It prints sample receipt codes and the published
+SHA-256 fingerprint; keep that output for the checks below.
+
+By default it only writes to the Firestore emulator. To use the shared
+development project instead, add `--allow-live`. Tell the team first, because
+each run adds one election and its demo voters (marked `demo: true`) to the
+project.
+
+```powershell
+# Emulator: set the same variable in the API terminal too
+$env:FIRESTORE_EMULATOR_HOST="127.0.0.1:8080"
+.venv\Scripts\python -m backend.seed_demo_results
+
+# Shared development project
+.venv\Scripts\python -m backend.seed_demo_results --allow-live
+```
+
+To also check the "not yet published" behaviour, seed in two steps:
+
+```powershell
+.venv\Scripts\python -m backend.seed_demo_results --allow-live --skip-publish
+# ...run the "before publishing" checks below, then:
+.venv\Scripts\python -m backend.seed_demo_results --allow-live --publish <ELECTION_ID>
+```
+
+The seed refuses to run while another election is `open`. Other options:
+`--voters N` (1 to 400, default 40) and `--seed N` (repeatable data).
+
+#### 3. Start both servers
+
+```powershell
+.venv\Scripts\python -m uvicorn backend.main:app --reload --env-file backend\.env
+npm run dev
+```
+
+`http://127.0.0.1:8000/health` should return `{"status":"ok"}`.
+
+#### 4. Published Results: `/results`
+
+| Check | Expected result |
+| --- | --- |
+| Open the page before results are published (`--skip-publish`) | "No results have been published yet" |
+| Open the page after publishing | Summary cards (status Final, ballots cast, turnout, published time), then one table per House division and Senate state |
+| Compare the "Published SHA-256 fingerprint" with the seed output | Identical |
+| Click "Download result package (JSON)" | A file named `result-package-<electionId>.json` downloads |
+| Stop the API and reload the page | "Results Unavailable" |
+
+#### 5. Verify receipt: `/verify-receipt`
+
+| Check | Expected result |
+| --- | --- |
+| Enter a receipt printed by the seed, before publishing | Green: "Your ballot was recorded", "It will be included when the results are published" |
+| Enter the same receipt after publishing | Green, "It is included in the published results" |
+| Enter it in lower case, or without dashes | Same green result (input is normalised) |
+| Change one character of a valid receipt | "No ballot was found for this receipt code…" |
+| Type `0`, `1`, `I`, `L`, `O` or a symbol | Amber warning; the character is removed |
+| Submit fewer than 16 characters | "Please enter all 16 characters…" (no request is sent) |
+| Submit 11 lookups within one minute | "Too many attempts. Please wait a minute and try again." |
+| DevTools → Network → the `verify` request | A `POST` with the code in the body, not the URL; the response contains only `recordedAt` and `includedInTally` |
+
+#### 6. Verify result package: `/verify-package`
+
+| Check | Expected result |
+| --- | --- |
+| Open the page | "Expected SHA-256 fingerprint" is pre-filled with the published fingerprint |
+| Download the official package from the page, then click Verify | "This result package is genuine and consistent"; every check is ticked |
+| Edit one vote count in the downloaded file and verify it | Fails "Fingerprint matches" and "Totals add up" for that contest |
+| Edit a count and also the contest's `informal`, so the totals still add up | Totals pass, but "Fingerprint matches" still fails |
+| Verify the untouched file with one character of the fingerprint changed | Fails "Fingerprint matches" |
+| Choose a non-JSON file, or a file over 2 MB | A clear error, and nothing is checked |
+| DevTools → Network while verifying | No request is sent: the file is hashed in the browser |
+
+#### Clean up
+
+Delete the demo election (`elections/<id>`), its entry in `publishedResults`,
+and the voters with `demo: true` from the Firebase console. Receipts for the
+election are in `receipts`, filtered by `electionId`.
+
 ## Authentication-code demo warning
 
 The six-digit authentication code in `/verify` is a demo placeholder: any six

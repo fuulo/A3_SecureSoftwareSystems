@@ -54,6 +54,13 @@ service cloud.firestore {
     match /govIdIndex/{document=**} {
       allow read, write: if false;
     }
+    // Read only through the public API, which rate-limits receipt lookups.
+    match /receipts/{receiptHash} {
+      allow read, write: if false;
+    }
+    match /publishedResults/{electionId} {
+      allow read, write: if false;
+    }
     match /elections/{electionId} {
       allow read, write: if false;
     }
