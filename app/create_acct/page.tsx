@@ -1,14 +1,20 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
-import { createUserWithEmailAndPassword } from "firebase/auth";
 import {
-  collection,
+  useEffect,
+  useState,
+} from "react";
+import {
+  createUserWithEmailAndPassword,
+  sendEmailVerification,
+} from "firebase/auth";
+import {
   doc,
   serverTimestamp,
   setDoc,
 } from "firebase/firestore";
+import { useRouter } from "next/navigation";
 import { auth, db } from "@/lib/firebase";
 import {
   mainHeader,
@@ -18,6 +24,7 @@ import {
 const MIN_AGE = 18;
 const MIN_PASSWORD_LENGTH = 6;
 const MIN_ADDRESS_LENGTH = 10;
+const EARLIEST_YEAR = 1900;
 
 const NAME_PATTERN =
   /^[A-Za-zÀ-ÖØ-öø-ÿ' -]+$/;
@@ -30,20 +37,13 @@ const EMAIL_PATTERN =
 
 const ADDRESS_LETTER_PATTERN =
   /[A-Za-zÀ-ÖØ-öø-ÿ]/;
-const POSTCODE_PATTERN = /^\d{4}$/;
-const AU_STATES = ["ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA"];
-
-type Step = "form" | "done";
 
 type FormData = {
   givenName: string;
   surname: string;
   dob: string;
   govId: string;
-  street: string;
-  suburb: string;
-  state: string;
-  postcode: string;
+  address: string;
   email: string;
   password: string;
   confirmPassword: string;
@@ -58,10 +58,7 @@ const emptyForm: FormData = {
   surname: "",
   dob: "",
   govId: "",
-  street: "",
-  suburb: "",
-  state: "",
-  postcode: "",
+  address: "",
   email: "",
   password: "",
   confirmPassword: "",
@@ -70,15 +67,53 @@ const emptyForm: FormData = {
 const inputStyle =
   "w-full rounded border border-slate-400 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#1f538d]";
 
+const selectStyle =
+  "w-full rounded border border-slate-400 bg-white px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#1f538d]";
+
 const linkStyle =
   "text-[13px] text-[#1b4779] hover:underline";
+
+const months = [
+  { value: "01", label: "January" },
+  { value: "02", label: "February" },
+  { value: "03", label: "March" },
+  { value: "04", label: "April" },
+  { value: "05", label: "May" },
+  { value: "06", label: "June" },
+  { value: "07", label: "July" },
+  { value: "08", label: "August" },
+  { value: "09", label: "September" },
+  { value: "10", label: "October" },
+  { value: "11", label: "November" },
+  { value: "12", label: "December" },
+];
+
+function getDaysInMonth(
+  year: number,
+  month: number
+): number {
+  if (!year || !month) {
+    return 31;
+  }
+
+  return new Date(
+    year,
+    month,
+    0
+  ).getDate();
+}
 
 function getAge(dob: string): number | null {
   const [year, month, day] = dob
     .split("-")
     .map(Number);
 
-  if (!year || !month || !day || year < 1900) {
+  if (
+    !year ||
+    !month ||
+    !day ||
+    year < EARLIEST_YEAR
+  ) {
     return null;
   }
 
@@ -113,21 +148,6 @@ function getAge(dob: string): number | null {
   return age;
 }
 
-function getLatestDob(): string {
-  const date = new Date();
-
-  date.setFullYear(
-    date.getFullYear() - MIN_AGE
-  );
-
-  const pad = (number: number) =>
-    String(number).padStart(2, "0");
-
-  return `${date.getFullYear()}-${pad(
-    date.getMonth() + 1
-  )}-${pad(date.getDate())}`;
-}
-
 function getFirebaseErrorMessage(
   firebaseError: unknown
 ): string {
@@ -137,11 +157,13 @@ function getFirebaseErrorMessage(
     "code" in firebaseError
   ) {
     const code = String(
-      (firebaseError as { code?: unknown }).code ??
-        ""
+      (firebaseError as { code?: unknown })
+        .code ?? ""
     );
 
-    if (code === "auth/email-already-in-use") {
+    if (
+      code === "auth/email-already-in-use"
+    ) {
       return "This email address is already registered.";
     }
 
@@ -153,12 +175,20 @@ function getFirebaseErrorMessage(
       return "Please choose a stronger password.";
     }
 
-    if (code === "auth/operation-not-allowed") {
+    if (
+      code === "auth/operation-not-allowed"
+    ) {
       return "Email and password registration is not enabled in Firebase.";
     }
 
     if (code === "permission-denied") {
       return "The account was created, but the user profile could not be saved.";
+    }
+
+    if (
+      code === "auth/too-many-requests"
+    ) {
+      return "Too many attempts. Please wait and try again.";
     }
   }
 
@@ -166,30 +196,150 @@ function getFirebaseErrorMessage(
 }
 
 export default function CreateAccountPage() {
-  const dobRef = useRef<HTMLInputElement>(null);
-
-  const [step, setStep] =
-    useState<Step>("form");
+  const router = useRouter();
 
   const [form, setForm] =
     useState<FormData>(emptyForm);
 
+  const [selectedDay, setSelectedDay] =
+    useState("");
+
+  const [selectedMonth, setSelectedMonth] =
+    useState("");
+
+  const [selectedYear, setSelectedYear] =
+    useState("");
+
+  const [latestAllowedYear, setLatestAllowedYear] =
+    useState<number | null>(null);
+
   const [fieldErrors, setFieldErrors] =
     useState<FormErrors>({});
 
-  const [error, setError] = useState("");
+  const [error, setError] =
+    useState("");
+
   const [isSubmitting, setIsSubmitting] =
     useState(false);
 
   useEffect(() => {
-    if (dobRef.current) {
-      dobRef.current.max = getLatestDob();
-    }
+    const today = new Date();
+
+    setLatestAllowedYear(
+      today.getFullYear() - MIN_AGE
+    );
   }, []);
+
+  const selectedYearNumber =
+    Number(selectedYear);
+
+  const selectedMonthNumber =
+    Number(selectedMonth);
+
+  const daysInSelectedMonth =
+    getDaysInMonth(
+      selectedYearNumber,
+      selectedMonthNumber
+    );
+
+  const days = Array.from(
+    {
+      length: daysInSelectedMonth,
+    },
+    (_, index) =>
+      String(index + 1).padStart(2, "0")
+  );
+
+  const years =
+    latestAllowedYear === null
+      ? []
+      : Array.from(
+          {
+            length:
+              latestAllowedYear -
+              EARLIEST_YEAR +
+              1,
+          },
+          (_, index) =>
+            latestAllowedYear - index
+        );
+
+  function updateDateOfBirth(
+    day: string,
+    month: string,
+    year: string
+  ) {
+    let validDay = day;
+
+    if (month && year && day) {
+      const numberOfDays =
+        getDaysInMonth(
+          Number(year),
+          Number(month)
+        );
+
+      if (Number(day) > numberOfDays) {
+        validDay = "";
+      }
+    }
+
+    setSelectedDay(validDay);
+    setSelectedMonth(month);
+    setSelectedYear(year);
+
+    if (
+      validDay &&
+      month &&
+      year
+    ) {
+      setForm((previous) => ({
+        ...previous,
+        dob: `${year}-${month}-${validDay}`,
+      }));
+    } else {
+      setForm((previous) => ({
+        ...previous,
+        dob: "",
+      }));
+    }
+
+    setFieldErrors((previous) => ({
+      ...previous,
+      dob: "",
+    }));
+
+    setError("");
+  }
+
+  function handleDateChange(
+    field: "day" | "month" | "year",
+    value: string
+  ) {
+    const nextDay =
+      field === "day"
+        ? value
+        : selectedDay;
+
+    const nextMonth =
+      field === "month"
+        ? value
+        : selectedMonth;
+
+    const nextYear =
+      field === "year"
+        ? value
+        : selectedYear;
+
+    updateDateOfBirth(
+      nextDay,
+      nextMonth,
+      nextYear
+    );
+  }
 
   function handleChange(
     event: React.ChangeEvent<
-      HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
+      HTMLInputElement | HTMLTextAreaElement
     >
   ) {
     const { name, value } = event.target;
@@ -207,32 +357,73 @@ export default function CreateAccountPage() {
     setError("");
   }
 
+  function fieldClass(
+    field: keyof FormData
+  ) {
+    return `${inputStyle} ${
+      fieldErrors[field]
+        ? "border-red-500"
+        : ""
+    }`;
+  }
+
+  function selectClass(
+    field: keyof FormData
+  ) {
+    return `${selectStyle} ${
+      fieldErrors[field]
+        ? "border-red-500"
+        : ""
+    }`;
+  }
+
   function validate(): FormErrors {
     const errors: FormErrors = {};
 
-    if (!form.givenName.trim()) {
+    const givenName =
+      form.givenName.trim();
+
+    const surname =
+      form.surname.trim();
+
+    const govId = form.govId
+      .replace(/\s/g, "")
+      .trim();
+
+    const address =
+      form.address.trim();
+
+    const email =
+      form.email.trim().toLowerCase();
+
+    if (!givenName) {
       errors.givenName =
-        "Please enter your given name.";
+        "Please enter your first name.";
     } else if (
-      !NAME_PATTERN.test(form.givenName.trim())
+      !NAME_PATTERN.test(givenName)
     ) {
       errors.givenName =
-        "Given name can contain letters, spaces, apostrophes and hyphens only.";
+        "First name can contain letters, spaces, apostrophes and hyphens only.";
     }
 
-    if (!form.surname.trim()) {
+    if (!surname) {
       errors.surname =
-        "Please enter your surname.";
+        "Please enter your last name.";
     } else if (
-      !NAME_PATTERN.test(form.surname.trim())
+      !NAME_PATTERN.test(surname)
     ) {
       errors.surname =
-        "Surname can contain letters, spaces, apostrophes and hyphens only.";
+        "Last name can contain letters, spaces, apostrophes and hyphens only.";
     }
 
-    if (!form.dob) {
+    if (
+      !selectedDay ||
+      !selectedMonth ||
+      !selectedYear ||
+      !form.dob
+    ) {
       errors.dob =
-        "Please select your date of birth.";
+        "Please select your complete date of birth.";
     } else {
       const age = getAge(form.dob);
 
@@ -244,43 +435,41 @@ export default function CreateAccountPage() {
         errors.dob =
           "Please enter a valid date of birth.";
       } else if (age < MIN_AGE) {
-        errors.dob = `You must be at least ${MIN_AGE} years old.`;
+        errors.dob =
+          `You must be at least ${MIN_AGE} years old.`;
       }
     }
 
-    const cleanedGovId = form.govId
-      .replace(/\s/g, "")
-      .trim();
-
-    if (!cleanedGovId) {
+    if (!govId) {
       errors.govId =
         "Please enter your GovID.";
     } else if (
-      !GOV_ID_PATTERN.test(cleanedGovId)
+      !GOV_ID_PATTERN.test(govId)
     ) {
       errors.govId =
         "GovID must contain only letters and numbers, between 6 and 20 characters.";
     }
 
-    if (form.street.trim().length < MIN_ADDRESS_LENGTH ||
-        !ADDRESS_LETTER_PATTERN.test(form.street.trim())) {
-      errors.street = "Please enter a valid street address.";
-    }
-    if (!form.suburb.trim() || !ADDRESS_LETTER_PATTERN.test(form.suburb.trim())) {
-      errors.suburb = "Please enter a valid suburb.";
-    }
-    if (!AU_STATES.includes(form.state)) {
-      errors.state = "Please select an Australian state or territory.";
-    }
-    if (!POSTCODE_PATTERN.test(form.postcode.trim())) {
-      errors.postcode = "Postcode must contain exactly four digits.";
+    if (!address) {
+      errors.address =
+        "Please enter your residential address.";
+    } else if (
+      address.length < MIN_ADDRESS_LENGTH
+    ) {
+      errors.address =
+        "Please enter your full residential address.";
+    } else if (
+      !ADDRESS_LETTER_PATTERN.test(address)
+    ) {
+      errors.address =
+        "Please enter a valid residential address.";
     }
 
-    if (!form.email.trim()) {
+    if (!email) {
       errors.email =
         "Please enter your email address.";
     } else if (
-      !EMAIL_PATTERN.test(form.email.trim())
+      !EMAIL_PATTERN.test(email)
     ) {
       errors.email =
         "Please enter a valid email address.";
@@ -293,7 +482,8 @@ export default function CreateAccountPage() {
       form.password.length <
       MIN_PASSWORD_LENGTH
     ) {
-      errors.password = `Use at least ${MIN_PASSWORD_LENGTH} characters.`;
+      errors.password =
+        `Use at least ${MIN_PASSWORD_LENGTH} characters.`;
     }
 
     if (!form.confirmPassword) {
@@ -316,7 +506,9 @@ export default function CreateAccountPage() {
 
     const errors = validate();
 
-    if (Object.keys(errors).length > 0) {
+    if (
+      Object.keys(errors).length > 0
+    ) {
       setFieldErrors(errors);
       setError(
         "Please correct the highlighted fields."
@@ -340,76 +532,62 @@ export default function CreateAccountPage() {
           form.password
         );
 
-      const voterRef = doc(collection(db, "voters"));
+      await sendEmailVerification(
+        credential.user
+      );
+
       await setDoc(
-        voterRef,
+        doc(
+          db,
+          "users",
+          credential.user.uid
+        ),
         {
-          authUid: credential.user.uid,
-          givenNames: form.givenName.trim(),
-          givenNamesLower: form.givenName.trim().toLocaleLowerCase(),
-          surname: form.surname.trim(),
-          surnameLower: form.surname.trim().toLocaleLowerCase(),
-          dateOfBirth: form.dob,
-          email,
+          givenName:
+            form.givenName.trim(),
+          surname:
+            form.surname.trim(),
+          dob: form.dob,
           govId: form.govId
             .replace(/\s/g, "")
             .trim(),
-          address: {
-            street: form.street.trim(),
-            suburb: form.suburb.trim(),
-            state: form.state,
-            postcode: form.postcode.trim(),
-          },
-          divisionId: null,
-          stateId: form.state,
-          enrolledBy: "self",
-          enrolmentStatus: "pending",
-          voted: false,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
+          address:
+            form.address.trim(),
+          email,
+          role: "voter",
+          hasVoted: false,
+          enrolmentStatus:
+            "not-enrolled",
+          eligibilityStatus:
+            "pending",
+          emailVerified: false,
+          createdAt:
+            serverTimestamp(),
         }
       );
 
-      setForm(emptyForm);
-      setStep("done");
+      router.replace(
+        "/email_verification"
+      );
     } catch (firebaseError) {
       console.error(firebaseError);
+
       setError(
-        getFirebaseErrorMessage(firebaseError)
+        getFirebaseErrorMessage(
+          firebaseError
+        )
       );
     } finally {
       setIsSubmitting(false);
     }
   }
 
-  if (step === "done") {
-    return (
-      <main className="flex min-h-[60vh] items-center justify-center px-6 py-12">
-        <section className="w-full max-w-md rounded-lg border border-slate-300 bg-white p-8 text-center shadow-lg">
-          <h1 className={`${mainHeader} mb-4`}>
-            Account Created
-          </h1>
-
-          <p className="mb-6 text-slate-700">
-            Your voter account has been created
-            successfully.
-          </p>
-
-          <Link
-            href="/login"
-            className={`${buttonStyle} inline-block`}
-          >
-            Go to login
-          </Link>
-        </section>
-      </main>
-    );
-  }
-
   return (
     <main className="flex min-h-[60vh] items-center justify-center px-6 py-12">
       <section className="w-full max-w-2xl rounded-lg border border-slate-300 bg-white p-8 shadow-lg">
-        <h1 className={`${mainHeader} mb-2 text-center`}>
+        <h1
+          className={`${mainHeader} mb-2 text-center`}
+        >
           Create Voter Account
         </h1>
 
@@ -440,11 +618,9 @@ export default function CreateAccountPage() {
                 required
                 value={form.givenName}
                 onChange={handleChange}
-                className={`${inputStyle} ${
-                  fieldErrors.givenName
-                    ? "border-red-500"
-                    : ""
-                }`}
+                className={fieldClass(
+                  "givenName"
+                )}
               />
 
               {fieldErrors.givenName && (
@@ -470,11 +646,9 @@ export default function CreateAccountPage() {
                 required
                 value={form.surname}
                 onChange={handleChange}
-                className={`${inputStyle} ${
-                  fieldErrors.surname
-                    ? "border-red-500"
-                    : ""
-                }`}
+                className={fieldClass(
+                  "surname"
+                )}
               />
 
               {fieldErrors.surname && (
@@ -486,27 +660,116 @@ export default function CreateAccountPage() {
           </div>
 
           <div>
-            <label
-              htmlFor="dob"
-              className="mb-1 block font-semibold"
-            >
+            <p className="mb-1 block font-semibold">
               Date of birth
-            </label>
+            </p>
 
-            <input
-              ref={dobRef}
-              id="dob"
-              name="dob"
-              type="date"
-              required
-              value={form.dob}
-              onChange={handleChange}
-              className={`${inputStyle} ${
-                fieldErrors.dob
-                  ? "border-red-500"
-                  : ""
-              }`}
-            />
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div>
+                <label
+                  htmlFor="dobDay"
+                  className="mb-1 block text-sm text-slate-600"
+                >
+                  Day
+                </label>
+
+                <select
+                  id="dobDay"
+                  value={selectedDay}
+                  onChange={(event) =>
+                    handleDateChange(
+                      "day",
+                      event.target.value
+                    )
+                  }
+                  className={selectClass("dob")}
+                  required
+                >
+                  <option value="">
+                    Day
+                  </option>
+
+                  {days.map((day) => (
+                    <option
+                      key={day}
+                      value={day}
+                    >
+                      {Number(day)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="dobMonth"
+                  className="mb-1 block text-sm text-slate-600"
+                >
+                  Month
+                </label>
+
+                <select
+                  id="dobMonth"
+                  value={selectedMonth}
+                  onChange={(event) =>
+                    handleDateChange(
+                      "month",
+                      event.target.value
+                    )
+                  }
+                  className={selectClass("dob")}
+                  required
+                >
+                  <option value="">
+                    Month
+                  </option>
+
+                  {months.map((month) => (
+                    <option
+                      key={month.value}
+                      value={month.value}
+                    >
+                      {month.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="dobYear"
+                  className="mb-1 block text-sm text-slate-600"
+                >
+                  Year
+                </label>
+
+                <select
+                  id="dobYear"
+                  value={selectedYear}
+                  onChange={(event) =>
+                    handleDateChange(
+                      "year",
+                      event.target.value
+                    )
+                  }
+                  className={selectClass("dob")}
+                  required
+                >
+                  <option value="">
+                    Year
+                  </option>
+
+                  {years.map((year) => (
+                    <option
+                      key={year}
+                      value={year}
+                    >
+                      {year}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
 
             {fieldErrors.dob && (
               <p className="mt-1 text-xs text-red-700">
@@ -535,11 +798,7 @@ export default function CreateAccountPage() {
               required
               value={form.govId}
               onChange={handleChange}
-              className={`${inputStyle} ${
-                fieldErrors.govId
-                  ? "border-red-500"
-                  : ""
-              }`}
+              className={fieldClass("govId")}
             />
 
             {fieldErrors.govId && (
@@ -553,34 +812,31 @@ export default function CreateAccountPage() {
             </p>
           </div>
 
-          <fieldset className="space-y-4">
-            <legend className="mb-2 font-semibold">Residential address</legend>
-            <div>
-              <label htmlFor="street" className="mb-1 block font-semibold">Street address</label>
-              <input id="street" name="street" autoComplete="address-line1" required value={form.street} onChange={handleChange} className={`${inputStyle} ${fieldErrors.street ? "border-red-500" : ""}`} />
-              {fieldErrors.street && <p role="alert" className="mt-1 text-xs text-red-700">{fieldErrors.street}</p>}
-            </div>
-            <div className="grid gap-5 md:grid-cols-2">
-              <div>
-                <label htmlFor="suburb" className="mb-1 block font-semibold">Suburb</label>
-                <input id="suburb" name="suburb" autoComplete="address-level2" required value={form.suburb} onChange={handleChange} className={`${inputStyle} ${fieldErrors.suburb ? "border-red-500" : ""}`} />
-                {fieldErrors.suburb && <p role="alert" className="mt-1 text-xs text-red-700">{fieldErrors.suburb}</p>}
-              </div>
-              <div>
-                <label htmlFor="state" className="mb-1 block font-semibold">State or territory</label>
-                <select id="state" name="state" autoComplete="address-level1" required value={form.state} onChange={handleChange} className={`${inputStyle} ${fieldErrors.state ? "border-red-500" : ""}`}>
-                  <option value="">Select a state or territory</option>
-                  {AU_STATES.map((state) => <option key={state} value={state}>{state}</option>)}
-                </select>
-                {fieldErrors.state && <p role="alert" className="mt-1 text-xs text-red-700">{fieldErrors.state}</p>}
-              </div>
-            </div>
-            <div>
-              <label htmlFor="postcode" className="mb-1 block font-semibold">Postcode</label>
-              <input id="postcode" name="postcode" inputMode="numeric" autoComplete="postal-code" maxLength={4} required value={form.postcode} onChange={handleChange} className={`${inputStyle} ${fieldErrors.postcode ? "border-red-500" : ""}`} />
-              {fieldErrors.postcode && <p role="alert" className="mt-1 text-xs text-red-700">{fieldErrors.postcode}</p>}
-            </div>
-          </fieldset>
+          <div>
+            <label
+              htmlFor="address"
+              className="mb-1 block font-semibold"
+            >
+              Residential address
+            </label>
+
+            <textarea
+              id="address"
+              name="address"
+              autoComplete="street-address"
+              required
+              rows={3}
+              value={form.address}
+              onChange={handleChange}
+              className={fieldClass("address")}
+            />
+
+            {fieldErrors.address && (
+              <p className="mt-1 text-xs text-red-700">
+                {fieldErrors.address}
+              </p>
+            )}
+          </div>
 
           <div>
             <label
@@ -598,11 +854,7 @@ export default function CreateAccountPage() {
               required
               value={form.email}
               onChange={handleChange}
-              className={`${inputStyle} ${
-                fieldErrors.email
-                  ? "border-red-500"
-                  : ""
-              }`}
+              className={fieldClass("email")}
             />
 
             {fieldErrors.email && (
@@ -612,8 +864,8 @@ export default function CreateAccountPage() {
             )}
 
             <p className="mt-1 text-xs text-slate-500">
-              Verification and password-reset instructions
-              may be sent to this address.
+              A verification email will be sent to this
+              address.
             </p>
           </div>
 
@@ -635,11 +887,9 @@ export default function CreateAccountPage() {
                 minLength={MIN_PASSWORD_LENGTH}
                 value={form.password}
                 onChange={handleChange}
-                className={`${inputStyle} ${
-                  fieldErrors.password
-                    ? "border-red-500"
-                    : ""
-                }`}
+                className={fieldClass(
+                  "password"
+                )}
               />
 
               {fieldErrors.password && (
@@ -670,11 +920,9 @@ export default function CreateAccountPage() {
                 minLength={MIN_PASSWORD_LENGTH}
                 value={form.confirmPassword}
                 onChange={handleChange}
-                className={`${inputStyle} ${
-                  fieldErrors.confirmPassword
-                    ? "border-red-500"
-                    : ""
-                }`}
+                className={fieldClass(
+                  "confirmPassword"
+                )}
               />
 
               {fieldErrors.confirmPassword && (
@@ -696,7 +944,10 @@ export default function CreateAccountPage() {
 
           <button
             type="submit"
-            disabled={isSubmitting}
+            disabled={
+              isSubmitting ||
+              latestAllowedYear === null
+            }
             className={`${buttonStyle} w-full disabled:cursor-not-allowed disabled:opacity-60`}
           >
             {isSubmitting

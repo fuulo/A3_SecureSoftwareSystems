@@ -1,178 +1,453 @@
 "use client";
 
-import { useState } from "react";
-import Link from "next/link";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import {
+  onAuthStateChanged,
+  User,
+} from "firebase/auth";
+import {
+  doc,
+  getDoc,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+} from "firebase/firestore";
+import { auth, db } from "@/lib/firebase";
+import {
+  buttonStyle,
+  mainHeader,
+} from "@/components/styles";
+
+type VoterProfile = {
+  enrolmentStatus?: string;
+  eligibilityStatus?: string;
+  hasVoted?: boolean;
+};
 
 type Candidate = {
   id: string;
   name: string;
-  description: string;
+  party: string;
 };
 
 const candidates: Candidate[] = [
   {
-    id: "candidate-a",
-    name: "Candidate A",
-    description: "Demo candidate for the academic prototype.",
+    id: "candidate-1",
+    name: "Candidate One",
+    party: "Example Party",
   },
   {
-    id: "candidate-b",
-    name: "Candidate B",
-    description: "Demo candidate for the academic prototype.",
+    id: "candidate-2",
+    name: "Candidate Two",
+    party: "Example Party",
   },
   {
-    id: "candidate-c",
-    name: "Candidate C",
-    description: "Demo candidate for the academic prototype.",
+    id: "candidate-3",
+    name: "Candidate Three",
+    party: "Example Party",
   },
 ];
 
-export default function BallotPage() {
-  const [selectedCandidate, setSelectedCandidate] = useState("");
-  const [submitted, setSubmitted] = useState(false);
+export default function VoterBallotPage() {
+  const router = useRouter();
 
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+  const [user, setUser] =
+    useState<User | null>(null);
+
+  const [profile, setProfile] =
+    useState<VoterProfile | null>(null);
+
+  const [selectedCandidate, setSelectedCandidate] =
+    useState("");
+
+  const [isLoading, setIsLoading] =
+    useState(true);
+
+  const [isSubmitting, setIsSubmitting] =
+    useState(false);
+
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(
+      auth,
+      async (currentUser) => {
+        if (!currentUser) {
+          router.replace("/login");
+          return;
+        }
+
+        try {
+          const userSnapshot = await getDoc(
+            doc(db, "users", currentUser.uid)
+          );
+
+          if (!userSnapshot.exists()) {
+            setError(
+              "Your voter profile could not be found."
+            );
+            setIsLoading(false);
+            return;
+          }
+
+          setUser(currentUser);
+          setProfile(
+            userSnapshot.data() as VoterProfile
+          );
+        } catch (profileError) {
+          console.error(profileError);
+
+          setError(
+            "Unable to load your voter information."
+          );
+        } finally {
+          setIsLoading(false);
+        }
+      }
+    );
+
+    return unsubscribe;
+  }, [router]);
+
+  const isEnrolled =
+    profile?.enrolmentStatus === "enrolled";
+
+  const isEligible =
+    profile?.eligibilityStatus === "eligible";
+
+  const hasVoted =
+    profile?.hasVoted === true;
+
+  const canVote =
+    isEnrolled &&
+    isEligible &&
+    !hasVoted;
+
+  async function handleSubmitVote(
+    event: React.FormEvent<HTMLFormElement>
+  ) {
     event.preventDefault();
 
-    if (!selectedCandidate) {
+    setError("");
+    setMessage("");
+
+    if (!user || !profile) {
+      setError(
+        "Your voter information is unavailable."
+      );
       return;
     }
 
-    setSubmitted(true);
+    if (!isEnrolled) {
+      setError(
+        "You cannot vote because you are not enrolled."
+      );
+      return;
+    }
+
+    if (!isEligible) {
+      setError(
+        "You cannot vote because your eligibility has not been approved."
+      );
+      return;
+    }
+
+    if (hasVoted) {
+      setError(
+        "You have already submitted your vote."
+      );
+      return;
+    }
+
+    if (!selectedCandidate) {
+      setError(
+        "Please select a candidate before submitting."
+      );
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      const userRef = doc(
+        db,
+        "users",
+        user.uid
+      );
+
+      const latestUserSnapshot =
+        await getDoc(userRef);
+
+      if (!latestUserSnapshot.exists()) {
+        throw new Error(
+          "Voter profile does not exist."
+        );
+      }
+
+      const latestProfile =
+        latestUserSnapshot.data() as VoterProfile;
+
+      if (
+        latestProfile.enrolmentStatus !==
+        "enrolled"
+      ) {
+        setError(
+          "You cannot vote because you are not enrolled."
+        );
+        return;
+      }
+
+      if (
+        latestProfile.eligibilityStatus !==
+        "eligible"
+      ) {
+        setError(
+          "You cannot vote because your eligibility has not been approved."
+        );
+        return;
+      }
+
+      if (latestProfile.hasVoted === true) {
+        setError(
+          "You have already submitted your vote."
+        );
+        return;
+      }
+
+      await setDoc(
+        doc(
+          db,
+          "votes",
+          user.uid
+        ),
+        {
+          voterUid: user.uid,
+          candidateId: selectedCandidate,
+          submittedAt: serverTimestamp(),
+        }
+      );
+
+      await updateDoc(userRef, {
+        hasVoted: true,
+        votedAt: serverTimestamp(),
+      });
+
+      setProfile((previous) => ({
+        ...previous,
+        hasVoted: true,
+      }));
+
+      setMessage(
+        "Your vote has been submitted successfully."
+      );
+
+      setSelectedCandidate("");
+    } catch (voteError) {
+      console.error(voteError);
+
+      setError(
+        "Your vote could not be submitted. Please try again."
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
-  if (submitted) {
+  if (isLoading) {
     return (
-      <main className="min-h-screen bg-[#f7f8f6] px-5 py-10 text-[#202923] sm:px-8 sm:py-16">
-        <div className="mx-auto max-w-2xl">
-          <section className="rounded-3xl border border-[#e5eae5] bg-white p-8 text-center shadow-[0_8px_30px_rgba(31,52,39,0.04)] sm:p-10">
-            <div
-              aria-hidden="true"
-              className="mx-auto mb-5 flex size-14 items-center justify-center rounded-full bg-[#e6f1e8] text-2xl text-[#28613e]"
-            >
-              ✓
-            </div>
+      <main className="flex min-h-[60vh] items-center justify-center px-6 py-12">
+        <p className="text-slate-600">
+          Loading ballot...
+        </p>
+      </main>
+    );
+  }
 
-            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-[#728077]">
-              Demo submission
-            </p>
+  if (hasVoted) {
+    return (
+      <main className="mx-auto max-w-3xl px-6 py-12">
+        <section className="rounded-lg border border-green-300 bg-white p-8 text-center shadow-lg">
+          <h1 className={`${mainHeader} mb-4`}>
+            Vote Already Submitted
+          </h1>
 
-            <h1 className="text-3xl font-semibold tracking-tight">
-              Ballot submitted
-            </h1>
+          <p className="mb-6 text-slate-700">
+            You have already submitted your vote.
+          </p>
 
-            <p className="mx-auto mt-4 max-w-md text-sm leading-6 text-[#758078]">
-              Your demo selection was recorded on this page only. It was not
-              sent to Firebase and cannot be used as an official vote.
-            </p>
+          <button
+            type="button"
+            onClick={() =>
+              router.push("/voter/status")
+            }
+            className={buttonStyle}
+          >
+            View voting status
+          </button>
+        </section>
+      </main>
+    );
+  }
 
-            <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
-              <Link
-                href="/voter/dashboard"
-                className="inline-flex min-h-12 items-center justify-center rounded-xl border border-[#cfd9d0] px-6 py-3 text-sm font-semibold text-[#173f32] transition-colors hover:bg-[#f3f6f2]"
-              >
-                Return to dashboard
-              </Link>
+  if (!canVote) {
+    return (
+      <main className="mx-auto max-w-3xl px-6 py-12">
+        <section className="rounded-lg border border-amber-300 bg-white p-8 shadow-lg">
+          <h1 className={`${mainHeader} mb-4`}>
+            Voting Unavailable
+          </h1>
 
-              <Link
-                href="/voter/ballot"
-                className="inline-flex min-h-12 items-center justify-center rounded-xl bg-[#173f32] px-6 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#245640]"
-              >
-                Start again
-              </Link>
-            </div>
-          </section>
-        </div>
+          <p className="mb-6 text-slate-700">
+            You cannot vote until your enrolment and
+            eligibility have been approved.
+          </p>
+
+          <div className="mb-6 space-y-3 rounded bg-slate-50 p-4">
+            <StatusRow
+              label="Enrolment status"
+              value={
+                profile?.enrolmentStatus ??
+                "Not available"
+              }
+            />
+
+            <StatusRow
+              label="Eligibility status"
+              value={
+                profile?.eligibilityStatus ??
+                "Not available"
+              }
+            />
+          </div>
+
+          <button
+            type="button"
+            onClick={() =>
+              router.push("/voter/dashboard")
+            }
+            className={buttonStyle}
+          >
+            Back to dashboard
+          </button>
+        </section>
       </main>
     );
   }
 
   return (
-    <main className="min-h-screen bg-[#f7f8f6] px-5 py-10 text-[#202923] sm:px-8 sm:py-16">
-      <div className="mx-auto max-w-3xl">
-        <header className="mb-8">
-          <Link
-            href="/voter/dashboard"
-            className="text-sm font-semibold text-[#245640] hover:underline"
+    <main className="mx-auto max-w-3xl px-6 py-12">
+      <section className="rounded-lg border border-slate-300 bg-white p-8 shadow-lg">
+        <h1 className={`${mainHeader} mb-2`}>
+          Current Ballot
+        </h1>
+
+        <p className="mb-6 text-slate-600">
+          Select one candidate and submit your vote.
+        </p>
+
+        {error && (
+          <p
+            role="alert"
+            className="mb-4 rounded border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700"
           >
-            ← Back to dashboard
-          </Link>
-
-          <p className="mt-8 text-xs font-semibold uppercase tracking-[0.16em] text-[#728077]">
-            Academic prototype ballot
+            {error}
           </p>
+        )}
 
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight sm:text-4xl">
-            Make your selection
-          </h1>
-
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-[#758078]">
-            Select one candidate below. This is a demonstration ballot only.
-            Your selection will not be stored or submitted to an election
-            authority.
+        {message && (
+          <p
+            role="status"
+            className="mb-4 rounded border border-green-300 bg-green-50 px-4 py-3 text-sm text-green-700"
+          >
+            {message}
           </p>
-        </header>
+        )}
 
-        <section className="rounded-3xl border border-[#e5eae5] bg-white p-6 shadow-[0_8px_30px_rgba(31,52,39,0.04)] sm:p-10">
-          <form onSubmit={handleSubmit}>
-            <fieldset>
-              <legend className="text-lg font-semibold">
-                Demo election candidates
-              </legend>
+        <form
+          onSubmit={handleSubmitVote}
+          className="space-y-4"
+        >
+          {candidates.map((candidate) => (
+            <label
+              key={candidate.id}
+              className={`block cursor-pointer rounded-lg border p-4 transition ${
+                selectedCandidate === candidate.id
+                  ? "border-[#1f538d] bg-blue-50"
+                  : "border-slate-300 hover:border-[#1f538d]"
+              }`}
+            >
+              <div className="flex items-start gap-3">
+                <input
+                  type="radio"
+                  name="candidate"
+                  value={candidate.id}
+                  checked={
+                    selectedCandidate === candidate.id
+                  }
+                  onChange={(event) =>
+                    setSelectedCandidate(
+                      event.target.value
+                    )
+                  }
+                  className="mt-1"
+                />
 
-              <div className="mt-5 space-y-4">
-                {candidates.map((candidate) => (
-                  <label
-                    key={candidate.id}
-                    className={`block cursor-pointer rounded-2xl border p-5 transition-colors ${
-                      selectedCandidate === candidate.id
-                        ? "border-[#173f32] bg-[#f3f6f2]"
-                        : "border-[#e5eae5] hover:bg-[#fafcf9]"
-                    }`}
-                  >
-                    <span className="flex items-start gap-4">
-                      <input
-                        type="radio"
-                        name="candidate"
-                        value={candidate.id}
-                        checked={selectedCandidate === candidate.id}
-                        onChange={(event) =>
-                          setSelectedCandidate(event.target.value)
-                        }
-                        className="mt-1 size-4 accent-[#173f32]"
-                      />
+                <div>
+                  <p className="font-semibold text-slate-900">
+                    {candidate.name}
+                  </p>
 
-                      <span>
-                        <span className="block font-semibold">
-                          {candidate.name}
-                        </span>
-                        <span className="mt-1 block text-sm text-[#758078]">
-                          {candidate.description}
-                        </span>
-                      </span>
-                    </span>
-                  </label>
-                ))}
+                  <p className="text-sm text-slate-600">
+                    {candidate.party}
+                  </p>
+                </div>
               </div>
-            </fieldset>
+            </label>
+          ))}
 
-            <div className="mt-8 border-t border-[#edf0ed] pt-6">
-              <p className="mb-4 text-xs leading-5 text-[#89938c]">
-                This prototype does not yet verify eligibility, prevent
-                duplicate voting, or persist ballot selections.
-              </p>
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className={`${buttonStyle} w-full disabled:cursor-not-allowed disabled:opacity-60`}
+          >
+            {isSubmitting
+              ? "Submitting vote..."
+              : "Submit vote"}
+          </button>
+        </form>
 
-              <button
-                type="submit"
-                disabled={!selectedCandidate}
-                className="inline-flex min-h-12 w-full items-center justify-center rounded-xl bg-[#173f32] px-6 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#245640] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Review and submit demo ballot
-              </button>
-            </div>
-          </form>
-        </section>
-      </div>
+        <button
+          type="button"
+          onClick={() =>
+            router.push("/voter/dashboard")
+          }
+          className="mt-4 w-full text-sm text-[#1b4779] hover:underline"
+        >
+          Back to dashboard
+        </button>
+      </section>
     </main>
+  );
+}
+
+function StatusRow({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div>
+      <p className="text-sm font-semibold text-slate-600">
+        {label}
+      </p>
+
+      <p className="capitalize text-slate-900">
+        {value.replace(/-/g, " ")}
+      </p>
+    </div>
   );
 }

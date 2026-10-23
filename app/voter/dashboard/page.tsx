@@ -7,9 +7,7 @@ import {
   signOut,
   User,
 } from "firebase/auth";
-import { collection, getDocs, query, where } from "firebase/firestore";
 import { auth } from "@/lib/firebase";
-import { db } from "@/lib/firebase";
 import {
   buttonStyle,
   mainHeader,
@@ -23,12 +21,6 @@ export default function VoterDashboardPage() {
 
   const [isCheckingAuth, setIsCheckingAuth] =
     useState(true);
-  const [voterProfile, setVoterProfile] = useState<{
-    givenNames?: string;
-    surname?: string;
-    enrolmentStatus?: string;
-  } | null>(null);
-  const [profileError, setProfileError] = useState("");
 
   useEffect(() => {
     let isMounted = true;
@@ -38,14 +30,6 @@ export default function VoterDashboardPage() {
         "authenticationCodeVerified"
       );
 
-    /*
-     * Firebase login and authentication-code login
-     * are separate checks.
-     *
-     * The user must have both:
-     * 1. A valid Firebase session.
-     * 2. A successful authentication-code session.
-     */
     if (authenticationCodeVerified !== "true") {
       router.replace("/login");
       return;
@@ -67,24 +51,18 @@ export default function VoterDashboardPage() {
           return;
         }
 
-        setUser(currentUser);
-        try {
-          const voterQuery = query(
-            collection(db, "voters"),
-            where("authUid", "==", currentUser.uid),
+        await currentUser.reload();
+
+        if (!currentUser.emailVerified) {
+          sessionStorage.removeItem(
+            "authenticationCodeVerified"
           );
-          const voterSnapshot = await getDocs(voterQuery);
-          if (!isMounted) return;
-          const voter = voterSnapshot.docs[0]?.data();
-          setVoterProfile(voter ? {
-            givenNames: voter.givenNames,
-            surname: voter.surname,
-            enrolmentStatus: voter.enrolmentStatus,
-          } : null);
-        } catch {
-          if (!isMounted) return;
-          setProfileError("Unable to load your voter profile. Please refresh the page.");
+
+          router.replace("/email_verification");
+          return;
         }
+
+        setUser(currentUser);
         setIsCheckingAuth(false);
       }
     );
@@ -111,20 +89,20 @@ export default function VoterDashboardPage() {
         "pendingAuthCodeEmail"
       );
 
-      window.location.replace("/");
+      router.replace("/login");
     }
   }
 
   if (isCheckingAuth) {
     return (
       <main className="flex min-h-[60vh] items-center justify-center px-6 py-12">
-        <section className="w-full max-w-3xl rounded-lg border border-slate-300 bg-white p-8 text-center shadow-lg">
+        <section className="w-full max-w-4xl rounded-lg border border-slate-300 bg-white p-8 text-center shadow-lg">
           <h1 className={`${mainHeader} mb-2`}>
             Voter Dashboard
           </h1>
 
           <p className="text-slate-600">
-            Checking your authentication...
+            Loading your dashboard...
           </p>
         </section>
       </main>
@@ -136,52 +114,147 @@ export default function VoterDashboardPage() {
   }
 
   return (
-    <main className="mx-auto max-w-5xl px-6 py-12">
-      <section className="rounded-lg border border-slate-300 bg-white p-8 shadow-lg">
-        <h1 className={`${mainHeader} mb-4`}>
-          Voter Dashboard
-        </h1>
+    <main className="mx-auto max-w-6xl px-6 py-12">
+      <section className="mb-8">
+        <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
+          <div>
+            <h1 className={`${mainHeader} mb-2`}>
+              Voter Dashboard
+            </h1>
 
-        <p className="mb-2">
-          Welcome, {voterProfile ? `${voterProfile.givenNames ?? ""} ${voterProfile.surname ?? ""}`.trim() : user.email}.
-        </p>
-
-        {voterProfile?.enrolmentStatus === "pending" && (
-          <p className="mb-4 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
-            Your voter enrolment is pending staff review.
-          </p>
-        )}
-        {profileError && <p role="alert" className="mb-4 rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">{profileError}</p>}
-
-        <p className="mb-6 text-sm text-slate-600">
-          Your password and authentication code have
-          been accepted.
-        </p>
-
-        <div className="mb-6 rounded border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
-          You have successfully entered the voter
-          dashboard.
-        </div>
-
-        <div className="flex flex-wrap gap-3">
-          <button
-            type="button"
-            onClick={() =>
-              router.push("/voter/ballot")
-            }
-            className={buttonStyle}
-          >
-            Go to ballot
-          </button>
+            <p className="text-slate-600">
+              Welcome,{" "}
+              <span className="font-semibold text-slate-900">
+                {user.email}
+              </span>
+            </p>
+          </div>
 
           <button
             type="button"
             onClick={handleLogout}
-            className="rounded bg-slate-600 px-4 py-2 text-white hover:bg-slate-700"
+            className="rounded border border-slate-400 px-4 py-2 text-sm text-slate-700 hover:bg-slate-100"
           >
             Log out
           </button>
         </div>
+      </section>
+
+      <section className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+        <button
+          type="button"
+          onClick={() =>
+            router.push("/voter/ballot")
+          }
+          className="rounded-lg border border-slate-300 bg-white p-6 text-left shadow-md transition hover:-translate-y-1 hover:border-[#1f538d] hover:shadow-lg"
+        >
+          <h2 className="mb-2 text-xl font-semibold text-[#1f538d]">
+            Vote
+          </h2>
+
+          <p className="mb-4 text-sm text-slate-600">
+            View the current ballot and submit your
+            vote.
+          </p>
+
+          <span className="text-sm font-semibold text-[#1b4779]">
+            Open ballot →
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() =>
+            router.push("/voter/profile")
+          }
+          className="rounded-lg border border-slate-300 bg-white p-6 text-left shadow-md transition hover:-translate-y-1 hover:border-[#1f538d] hover:shadow-lg"
+        >
+          <h2 className="mb-2 text-xl font-semibold text-[#1f538d]">
+            My profile
+          </h2>
+
+          <p className="mb-4 text-sm text-slate-600">
+            View and manage your account information.
+          </p>
+
+          <span className="text-sm font-semibold text-[#1b4779]">
+            View profile →
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() =>
+            router.push("/voter/status")
+          }
+          className="rounded-lg border border-slate-300 bg-white p-6 text-left shadow-md transition hover:-translate-y-1 hover:border-[#1f538d] hover:shadow-lg"
+        >
+          <h2 className="mb-2 text-xl font-semibold text-[#1f538d]">
+            Voting status
+          </h2>
+
+          <p className="mb-4 text-sm text-slate-600">
+            Check your enrolment and voting status.
+          </p>
+
+          <span className="text-sm font-semibold text-[#1b4779]">
+            View status →
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() =>
+            router.push("/voter/help")
+          }
+          className="rounded-lg border border-slate-300 bg-white p-6 text-left shadow-md transition hover:-translate-y-1 hover:border-[#1f538d] hover:shadow-lg"
+        >
+          <h2 className="mb-2 text-xl font-semibold text-[#1f538d]">
+            Help and information
+          </h2>
+
+          <p className="mb-4 text-sm text-slate-600">
+            Find information about voting and using
+            the system.
+          </p>
+
+          <span className="text-sm font-semibold text-[#1b4779]">
+            Get help →
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() =>
+            router.push("/forgot_pw")
+          }
+          className="rounded-lg border border-slate-300 bg-white p-6 text-left shadow-md transition hover:-translate-y-1 hover:border-[#1f538d] hover:shadow-lg"
+        >
+          <h2 className="mb-2 text-xl font-semibold text-[#1f538d]">
+            Change password
+          </h2>
+
+          <p className="mb-4 text-sm text-slate-600">
+            Reset your password using your email
+            address.
+          </p>
+
+          <span className="text-sm font-semibold text-[#1b4779]">
+            Change password →
+          </span>
+        </button>
+      </section>
+
+      <section className="mt-8 rounded-lg border border-blue-200 bg-blue-50 p-5 text-sm text-blue-900">
+        <h2 className="mb-2 font-semibold">
+          Your account is ready
+        </h2>
+
+        <p>
+          Choose an option above to continue. Your
+          email, password, and authentication code
+          have been accepted.
+        </p>
       </section>
     </main>
   );
