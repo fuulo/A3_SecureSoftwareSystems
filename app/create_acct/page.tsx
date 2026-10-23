@@ -29,6 +29,9 @@ const NAME_PATTERN =
 const GOV_ID_PATTERN =
   /^[A-Za-z0-9]{6,20}$/;
 
+const PHONE_PATTERN = /^(?:\+?61|0)[2-478]\d{8}$/;
+
+
 const EMAIL_PATTERN =
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -41,6 +44,7 @@ type FormData = {
   dob: string;
   govId: string;
   address: string;
+  phonenumber: string;
   email: string;
   password: string;
   confirmPassword: string;
@@ -56,6 +60,7 @@ const emptyForm: FormData = {
   dob: "",
   govId: "",
   address: "",
+  phonenumber: "",
   email: "",
   password: "",
   confirmPassword: "",
@@ -139,6 +144,10 @@ function getAge(dob: string): number | null {
   }
 
   return age;
+}
+
+function cleanPhone(value: string): string {
+  return value.replace(/[\s()-]/g, "");
 }
 
 function getFirebaseErrorMessage(
@@ -375,6 +384,9 @@ export default function CreateAccountPage() {
     const address =
       form.address.trim();
 
+    const phonenumber = 
+      cleanPhone(form.phonenumber);
+
     const email =
       form.email.trim().toLowerCase();
 
@@ -445,6 +457,12 @@ export default function CreateAccountPage() {
     ) {
       errors.address =
         "Please enter a valid residential address.";
+    }
+
+    if (!phonenumber) {
+      errors.phonenumber = "Please enter your phone number.";
+    } else if (!PHONE_PATTERN.test(phonenumber)) {
+      errors.phonenumber = "Please enter a valid Australian phone number.";
     }
 
     if (!email) {
@@ -819,6 +837,38 @@ export default function CreateAccountPage() {
               </p>
             )}
           </div>
+
+          <div>
+            <label
+              htmlFor="phonenumber"
+              className="mb-1 block font-semibold"
+            >
+              Phone number
+            </label>
+
+            <input
+              id="phonenumber"
+              name="phonenumber"
+              type="tel"
+              inputMode="tel"
+              autoComplete="tel"
+              required
+              value={form.phonenumber}
+              onChange={handleChange}
+              className={fieldClass("phonenumber")}
+            />
+
+            {fieldErrors.phonenumber && (
+              <p className="mt-1 text-xs text-red-700">
+                {fieldErrors.phonenumber}
+              </p>
+            )}
+
+            <p className="mt-1 text-xs text-slate-500">
+              For example, 0482 069 241 or +61 482 069 241.
+            </p>
+          </div>
+
 
           <div>
             <label
