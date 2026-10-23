@@ -110,7 +110,8 @@ configuration document (`config/allowedIpRanges/ranges/{locationId}`).
   "reviewedAt": "optional timestamp",
   "createdAt": "timestamp",
   "updatedAt": "timestamp",
-  "voted": true | false
+  "voted": true | false,
+  "phoneNumber": "..."
 }
 ```
 
