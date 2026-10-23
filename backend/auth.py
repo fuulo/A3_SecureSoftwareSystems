@@ -33,7 +33,7 @@ async def verify_token(
         claims = auth.verify_id_token(credentials.credentials, check_revoked=True)
         auth_time = int(claims.get("auth_time", 0))
     except Exception as exc:
-        logger.info("Rejected Firebase token: %s", exc.__class__.__name__)
+        logger.info("Rejected Firebase token: %s: %s", exc.__class__.__name__, exc)
         raise HTTPException(status_code=401, detail="Authentication required") from exc
 
     request.state.token_claims = claims

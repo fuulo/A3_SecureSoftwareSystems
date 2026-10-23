@@ -63,7 +63,8 @@ def _validate_candidate(data: dict[str, Any], election_ref: Any, staff: dict[str
         if data["stateId"] != staff.get("stateId"):
             raise HTTPException(status_code=403, detail="State is outside your scope")
         regions = list(election_ref.collection("senateRegions").stream(transaction=tx))
-        if not any(region.id == data["stateId"] or (region.get("stateId") == data["stateId"]) for region in regions):
+        if not any(region.id == data["stateId"] or (region.to_dict() or {}).get("stateId") == data["stateId"]
+                   for region in regions):
             raise HTTPException(status_code=422, detail="Senate region does not exist")
         group_id = data.get("groupId")
         if group_id:
@@ -121,7 +122,7 @@ def candidate_options(election_id: str, staff: dict[str, Any] = Depends(delegate
                       for item in ref.collection("divisions").where("stateId", "==", staff["stateId"]).stream()],
         "senateRegions": [{"regionId": item.id, **(item.to_dict() or {})}
                           for item in ref.collection("senateRegions").stream()
-                          if item.id == staff["stateId"] or item.get("stateId") == staff["stateId"]],
+                          if item.id == staff["stateId"] or (item.to_dict() or {}).get("stateId") == staff["stateId"]],
         "senateGroups": [{"groupId": item.id, **(item.to_dict() or {})}
                          for item in ref.collection("senateGroups").where("stateId", "==", staff["stateId"]).stream()],
     }

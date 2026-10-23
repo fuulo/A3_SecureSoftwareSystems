@@ -1,5 +1,4 @@
 import logging
-import secrets
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -8,7 +7,6 @@ from google.cloud import firestore
 
 from backend.audit import write_audit
 from backend.auth import staff_access
-from backend.email import send_password_setup_email
 from backend.firestore_client import db
 from backend.models import StaffCreate, StaffEdit
 from backend.rate_limit import limiter
@@ -20,17 +18,20 @@ admin_access = staff_access("admin")
 
 @router.get("")
 def list_staff(staff: dict[str, Any] = Depends(admin_access)) -> list[dict[str, Any]]:
-    return [
-        {
+    rows = []
+    for item in db.collection("staff").stream():
+        # DocumentSnapshot.get() raises KeyError for missing fields (e.g. lastLoginAt
+        # before a new account's first login), so read from the dict instead.
+        data = item.to_dict() or {}
+        rows.append({
             "staffId": item.id,
-            "name": item.get("name"),
-            "role": item.get("role"),
-            "stateId": item.get("stateId"),
-            "active": item.get("active"),
-            "lastLoginAt": item.get("lastLoginAt"),
-        }
-        for item in db.collection("staff").stream()
-    ]
+            "name": data.get("name"),
+            "role": data.get("role"),
+            "stateId": data.get("stateId"),
+            "active": data.get("active"),
+            "lastLoginAt": data.get("lastLoginAt"),
+        })
+    return rows
 
 
 @router.post("", status_code=201)
@@ -42,9 +43,7 @@ def create_staff(
 ) -> dict[str, str]:
     email = body.email.strip().lower()
     try:
-        user = auth.create_user(email=email, password=secrets.token_urlsafe(32))
-        setup_link = auth.generate_password_reset_link(email)
-        send_password_setup_email(email, body.name.strip(), setup_link)
+        user = auth.create_user(email=email, password=body.password)
         staff_ref = db.collection("staff").document()
         transaction = db.transaction()
 
@@ -66,7 +65,9 @@ def create_staff(
             tx.create(staff_ref, data)
 
         create(transaction)
-        return {"staffId": staff_ref.id, "message": "Password setup instructions were sent."}
+        return {"staffId": staff_ref.id, "message": "Staff account created."}
+    except auth.EmailAlreadyExistsError as exc:
+        raise HTTPException(status_code=409, detail="An account with this email already exists") from exc
     except Exception as exc:
         logger.exception("Staff account creation failed")
         if "user" in locals():

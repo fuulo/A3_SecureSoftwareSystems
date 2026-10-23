@@ -8,6 +8,7 @@ from google.cloud import firestore
 
 from backend.audit import write_audit
 from backend.auth import staff_access
+from backend.election_defaults import write_default_structure
 from backend.firestore_client import db
 from backend.models import ElectionCreate, PhaseChange
 
@@ -54,6 +55,7 @@ def create_election(body: ElectionCreate, request: Request,
                     before=None, after={"name": data["name"], "status": "setup"},
                     outcome="success", reason=None, request=request)
         tx.create(election_ref, data)
+        write_default_structure(tx, election_ref, staff["staffId"])
 
     try:
         create(transaction)

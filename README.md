@@ -45,6 +45,11 @@ python -m pip install -r backend/requirements.txt
 python -m uvicorn backend.main:app --reload
 ```
 
+If .env file is not detected:
+
+```powershell
+python -m uvicorn backend.main:app --reload --env-file backend\.env
+```
 For local emulator use, set `FIRESTORE_EMULATOR_HOST` and
 `FIREBASE_AUTH_EMULATOR_HOST` in the API process environment and start the
 Firestore and Auth emulators with `firebase emulators:start --only firestore,auth`.

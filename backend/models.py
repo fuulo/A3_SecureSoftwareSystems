@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 from typing_extensions import Annotated
 
 Name = Annotated[str, StringConstraints(min_length=1, max_length=100, pattern=r"^[A-Za-zÀ-ÖØ-öø-ÿ' -]+$")]
@@ -16,6 +16,17 @@ class StaffCreate(StrictModel):
     email: Annotated[str, Field(min_length=3, max_length=254, pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")]
     role: Literal["aecEmployee", "commissionerDelegate", "admin"]
     stateId: Literal["ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA"]
+    password: Annotated[str, Field(min_length=12, max_length=128)]
+
+    @field_validator("password")
+    @classmethod
+    def password_is_strong_enough(cls, value: str) -> str:
+        if not (any(c.islower() for c in value) and any(c.isupper() for c in value)
+                and any(c.isdigit() for c in value)):
+            raise ValueError("Password must include upper-case, lower-case and numeric characters")
+        if value != value.strip():
+            raise ValueError("Password must not start or end with whitespace")
+        return value
 
 
 class StaffEdit(StrictModel):

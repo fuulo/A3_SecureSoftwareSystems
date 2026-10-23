@@ -252,9 +252,19 @@ export default function StaffTools() {
       }), "Staff account updated.");
       setEditingStaff(null);
     } else {
+      if (form.password !== form.confirmPassword) {
+        setError("Passwords do not match.");
+        return;
+      }
+      if (!form.password || form.password.length < 12 || !/[a-z]/.test(form.password)
+          || !/[A-Z]/.test(form.password) || !/\d/.test(form.password)) {
+        setError("Password must be at least 12 characters and include upper-case, lower-case and numeric characters.");
+        return;
+      }
       await run(() => sendJson("/api/admin/staff", "POST", {
         name: form.name, email: form.email, role: form.role, stateId: form.stateId,
-      }), "Staff account created. Password setup instructions were sent.");
+        password: form.password,
+      }), "Staff account created. Share the password with the staff member securely.");
     }
     setForm({});
   };
@@ -351,7 +361,7 @@ export default function StaffTools() {
   const formField = (name: string, label: string, type = "text", required = true) => (
     <label key={name} className="block space-y-1 text-sm font-semibold">
       <span>{label}</span>
-      <input className={inputStyle} type={type} name={name} required={required} value={form[name] ?? ""}
+      <input className={inputStyle} type={type} name={name} required={required} autoComplete={type === "password" ? "new-password" : undefined} value={form[name] ?? ""}
         onChange={(event) => setForm((current) => ({ ...current, [name]: event.target.value }))} />
     </label>
   );
@@ -587,6 +597,8 @@ export default function StaffTools() {
       <form onSubmit={(event) => void submitStaffCreate(event)} className="mb-6 grid gap-4 rounded-lg border bg-white p-6 sm:grid-cols-2">
         <h2 className="text-lg font-semibold sm:col-span-2">{editingStaff ? "Edit staff account" : "Create staff account"}</h2>
         {formField("name", "Name")}{!editingStaff && formField("email", "Email", "email")}
+        {!editingStaff && formField("password", "Password (min 12 characters)", "password")}
+        {!editingStaff && formField("confirmPassword", "Confirm password", "password")}
         {selectField("role", "Role", [{ value:"aecEmployee",label:"AEC employee" },{ value:"commissionerDelegate",label:"Commissioner delegate" },{ value:"admin",label:"Admin" }])}
         {selectField("stateId", "State", ["ACT","NSW","NT","QLD","SA","TAS","VIC","WA"].map((v)=>({value:v,label:v})))}
         {editingStaff && <label className="flex items-center gap-2 text-sm font-semibold"><input type="checkbox" checked={form.active === "true"} onChange={(event) => setForm((old) => ({ ...old, active: String(event.target.checked) }))} />Active</label>}

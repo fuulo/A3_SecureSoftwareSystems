@@ -34,7 +34,7 @@ def test_voter_endpoint_requires_a_bearer_token():
     ("method", "path", "body"),
     [
         ("GET", "/api/admin/staff", None),
-        ("POST", "/api/admin/staff", {"name": "Alex Employee", "email": "alex@example.org", "role": "aecEmployee", "stateId": "VIC"}),
+        ("POST", "/api/admin/staff", {"name": "Alex Employee", "email": "alex@example.org", "role": "aecEmployee", "stateId": "VIC", "password": "Str0ngPassw0rd!"}),
         ("PATCH", "/api/admin/staff/staff_1", {"name": "Alex Employee"}),
         ("DELETE", "/api/admin/staff/staff_1", None),
         ("GET", "/api/admin/ip-ranges", None),
