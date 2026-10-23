@@ -1,10 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import {
-  useEffect,
-  useState,
-} from "react";
+import { useState } from "react";
 import {
   createUserWithEmailAndPassword,
   sendEmailVerification,
@@ -96,11 +93,7 @@ function getDaysInMonth(
     return 31;
   }
 
-  return new Date(
-    year,
-    month,
-    0
-  ).getDate();
+  return new Date(year, month, 0).getDate();
 }
 
 function getAge(dob: string): number | null {
@@ -210,9 +203,6 @@ export default function CreateAccountPage() {
   const [selectedYear, setSelectedYear] =
     useState("");
 
-  const [latestAllowedYear, setLatestAllowedYear] =
-    useState<number | null>(null);
-
   const [fieldErrors, setFieldErrors] =
     useState<FormErrors>({});
 
@@ -222,13 +212,8 @@ export default function CreateAccountPage() {
   const [isSubmitting, setIsSubmitting] =
     useState(false);
 
-  useEffect(() => {
-    const today = new Date();
-
-    setLatestAllowedYear(
-      today.getFullYear() - MIN_AGE
-    );
-  }, []);
+  const latestAllowedYear =
+    new Date().getFullYear() - MIN_AGE;
 
   const selectedYearNumber =
     Number(selectedYear);
@@ -250,19 +235,16 @@ export default function CreateAccountPage() {
       String(index + 1).padStart(2, "0")
   );
 
-  const years =
-    latestAllowedYear === null
-      ? []
-      : Array.from(
-          {
-            length:
-              latestAllowedYear -
-              EARLIEST_YEAR +
-              1,
-          },
-          (_, index) =>
-            latestAllowedYear - index
-        );
+  const years = Array.from(
+    {
+      length:
+        latestAllowedYear -
+        EARLIEST_YEAR +
+        1,
+    },
+    (_, index) =>
+      latestAllowedYear - index
+  );
 
   function updateDateOfBirth(
     day: string,
@@ -945,8 +927,7 @@ export default function CreateAccountPage() {
           <button
             type="submit"
             disabled={
-              isSubmitting ||
-              latestAllowedYear === null
+              isSubmitting
             }
             className={`${buttonStyle} w-full disabled:cursor-not-allowed disabled:opacity-60`}
           >
