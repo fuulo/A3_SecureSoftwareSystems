@@ -9,7 +9,6 @@ import {
 } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import {
-  buttonStyle,
   mainHeader,
 } from "@/components/styles";
 
