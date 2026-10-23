@@ -1,9 +1,9 @@
-import resultPackage from "../public/result-package.json";
+import { ApiError, publicApiRequest, publicApiUrl } from "./api";
 
-// Mock data for the public audit pages.
-// TODO: replace with data from the backend once results are published there.
+// Result package format, built by backend/results.py when results are published.
 
 export type CandidateResult = {
+  id: string;
   name: string;
   party: string;
   votes: number;
@@ -11,8 +11,10 @@ export type CandidateResult = {
 
 export type Contest = {
   id: string;
+  chamber: "house" | "senate";
   title: string;
   seats: number;
+  ballotsCast: number;
   informal: number;
   candidates: CandidateResult[];
 };
@@ -26,20 +28,31 @@ export type ResultPackage = {
     publishedAt: string;
     enrolledVoters: number;
     ballotsCast: number;
+    receiptsIssued: number;
   };
   contests: Contest[];
 };
 
-export const publishedResults: ResultPackage = resultPackage;
+export type PublishedResults = {
+  // SHA-256 fingerprint recorded when the package was published
+  sha256: string;
+  package: ResultPackage;
+};
 
-// Where voters can download the official result package
-export const RESULT_PACKAGE_URL = "/result-package.json";
+// Where voters can download the official result package (the exact published bytes)
+export function resultPackageUrl() {
+  return publicApiUrl("/api/public/results/package.json");
+}
 
-// SHA-256 fingerprint of public/result-package.json.
-// If the file changes, this value MUST be recalculated (e.g. `sha256sum public/result-package.json`).
-// The file is kept on one line so Git line-ending conversion cannot change its bytes.
-export const RESULT_PACKAGE_SHA256 =
-  "6163a6ac237a0eb6dc24c456fc30da2ad9b64be9bcb2d50d65ce929570fc1a00";
+// Latest published results, or null if nothing has been published yet
+export async function fetchPublishedResults(): Promise<PublishedResults | null> {
+  try {
+    return await publicApiRequest<PublishedResults>("/api/public/results");
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
 
 // Formats a number with thousands separators, e.g. 9450 -> "9,450"
 export function formatNumber(value: number) {

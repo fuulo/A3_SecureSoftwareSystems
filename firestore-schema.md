@@ -31,6 +31,8 @@
     /senateBallots/{ballotId}
     /counts/{countId}                  ← results & recounts
         /rounds/{roundNumber}
+/receipts/{receiptHash}                ← ballot receipts (hash only)
+/publishedResults/{electionId}         ← frozen public result package
 /auditLogs/{logId}
 ```
 
@@ -333,9 +335,13 @@ Candidate withdrawals are soft state changes. A withdrawn candidate is never del
   "aboveTheLine": ["group_C", "group_A", "group_F"],   // empty if not used
   "belowTheLine": ["cand_44", "cand_41", "cand_12"],   // empty if not used
   "source": "electronic | paper_scan",
-  "isFormal": true | false
+  "isFormal": true | false,
+  "countedAs": "aboveTheLine | belowTheLine | null"   // which part is counted; a formal BTL vote wins
 }
 ```
+
+Ballots hold no voter reference and no timestamp, so they cannot be traced back
+to the voter, who only gains `voted: true`.
 
 ### `elections/{electionId}/counts/{countId}`
 
@@ -381,6 +387,35 @@ Candidate withdrawals are soft state changes. A withdrawn candidate is never del
 | `elected`  | A candidate reached the quota                                                   |
 | `excluded` | The lowest candidate was eliminated                                             |
 | `transfer` | Votes moved from an elected or excluded candidate to the next preferences       |
+
+---
+
+## Receipts and Published Results
+
+### `receipts/{receiptHash}`
+
+Created in the same transaction as a voter's ballots. The document ID is the
+SHA-256 of the 16-character receipt code; the code itself is shown to the voter
+once and never stored.
+
+```jsonc
+{
+  "electionId": "fed2028",
+  "recordedAt": "timestamp"   // rounded down to the minute
+}
+```
+
+### `publishedResults/{electionId}` (write once)
+
+```jsonc
+{
+  "electionId": "fed2028",
+  "packageJson": "{...}",     // exact bytes served as the downloadable result package
+  "sha256": "hex",            // fingerprint of packageJson, also written to the audit log
+  "publishedAt": "timestamp",
+  "publishedBy": "staffId"
+}
+```
 
 ---
 

@@ -53,6 +53,31 @@ export async function apiRequest<T>(
     requestLoginRedirect();
     throw new ApiError(401, "Your session has expired. Please sign in again.");
   }
+  return readResponse<T>(response);
+}
+
+// Full URL of a public API path, for links such as file downloads
+export function publicApiUrl(path: string) {
+  return `${API_BASE_URL ?? ""}${path}`;
+}
+
+// Calls a public endpoint that needs no sign-in (results and verification pages)
+export async function publicApiRequest<T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
+  if (!API_BASE_URL) {
+    throw new Error("The voting API is not configured.");
+  }
+  const response = await fetch(publicApiUrl(path), {
+    ...options,
+    headers: { "Content-Type": "application/json", ...options.headers },
+    cache: "no-store",
+  });
+  return readResponse<T>(response);
+}
+
+async function readResponse<T>(response: Response): Promise<T> {
   let payload: unknown;
   try {
     payload = await response.json();

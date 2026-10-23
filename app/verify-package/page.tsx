@@ -4,9 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { mainHeader } from "../../components/styles";
 import {
-  RESULT_PACKAGE_SHA256,
-  RESULT_PACKAGE_URL,
+  fetchPublishedResults,
   formatNumber,
+  resultPackageUrl,
 } from "../../lib/results";
 
 // Settings (change them here)
@@ -58,12 +58,15 @@ function checkContents(text: string): Check[] {
     typeof election.id === "string" &&
     isCount(election.ballotsCast) &&
     isCount(election.enrolledVoters) &&
+    isCount(election.receiptsIssued) &&
     Array.isArray(contests) &&
     contests.length > 0 &&
     contests.every(
       (c) =>
         isRecord(c) &&
         typeof c.title === "string" &&
+        (c.chamber === "house" || c.chamber === "senate") &&
+        isCount(c.ballotsCast) &&
         isCount(c.informal) &&
         Array.isArray(c.candidates) &&
         c.candidates.every((cand) => isRecord(cand) && isCount(cand.votes))
@@ -81,6 +84,14 @@ function checkContents(text: string): Check[] {
 
   const ballotsCast = election.ballotsCast as number;
   const enrolled = election.enrolledVoters as number;
+  const receiptsIssued = election.receiptsIssued as number;
+  const typedContests = contests as {
+    title: string;
+    chamber: "house" | "senate";
+    ballotsCast: number;
+    informal: number;
+    candidates: { votes: number }[];
+  }[];
 
   const checks: Check[] = [
     {
@@ -93,15 +104,33 @@ function checkContents(text: string): Check[] {
       passed: ballotsCast <= enrolled,
       detail: `${formatNumber(ballotsCast)} ballots cast from ${formatNumber(enrolled)} enrolled voters.`,
     },
+    {
+      label: "Every ballot has a receipt",
+      passed: receiptsIssued === ballotsCast,
+      detail: `${formatNumber(receiptsIssued)} receipts issued for ${formatNumber(ballotsCast)} ballots.`,
+    },
   ];
 
-  // Every ballot must be counted once in each contest (formal + informal)
-  for (const contest of contests as { title: string; informal: number; candidates: { votes: number }[] }[]) {
+  // Each voter casts one House and one Senate ballot, so each chamber's contests
+  // together must account for every ballot exactly once
+  for (const [chamber, label] of [["house", "House"], ["senate", "Senate"]] as const) {
+    const total = typedContests
+      .filter((c) => c.chamber === chamber)
+      .reduce((sum, c) => sum + c.ballotsCast, 0);
+    checks.push({
+      label: `Every ballot in one contest: ${label}`,
+      passed: total === ballotsCast,
+      detail: `${formatNumber(total)} ${label} ballots across contests, ${formatNumber(ballotsCast)} ballots cast.`,
+    });
+  }
+
+  // Every ballot in a contest is counted once (formal + informal)
+  for (const contest of typedContests) {
     const total = contest.candidates.reduce((sum, c) => sum + c.votes, 0) + contest.informal;
     checks.push({
       label: `Totals add up: ${contest.title}`,
-      passed: total === ballotsCast,
-      detail: `${formatNumber(total)} votes counted, ${formatNumber(ballotsCast)} ballots cast.`,
+      passed: total === contest.ballotsCast,
+      detail: `${formatNumber(total)} votes counted, ${formatNumber(contest.ballotsCast)} ballots cast.`,
     });
   }
 
@@ -110,18 +139,46 @@ function checkContents(text: string): Check[] {
 
 export default function VerifyPackagePage() {
   const formRef = useRef<HTMLFormElement>(null);
+  const publishedHash = useRef("");
   const [file, setFile] = useState<File | null>(null);
-  const [expectedHash, setExpectedHash] = useState(RESULT_PACKAGE_SHA256);
+  const [expectedHash, setExpectedHash] = useState("");
+  const [hashNotice, setHashNotice] = useState("Loading the published fingerprint...");
   const [error, setError] = useState("");
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [checking, setChecking] = useState(false);
+
+  // Fill in the fingerprint recorded when the results were published
+  useEffect(() => {
+    let active = true;
+    fetchPublishedResults()
+      .then((published) => {
+        if (!active) return;
+        if (!published) {
+          setHashNotice("No results have been published yet.");
+          return;
+        }
+        publishedHash.current = published.sha256;
+        setExpectedHash((current) => current || published.sha256);
+        setHashNotice("");
+      })
+      .catch(() => {
+        if (active) {
+          setHashNotice(
+            "The published fingerprint could not be loaded. Paste one from a trusted source."
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Clear the form when the page is shown again by back/forward navigation
   useEffect(() => {
     function clearForm() {
       formRef.current?.reset();
       setFile(null);
-      setExpectedHash(RESULT_PACKAGE_SHA256);
+      setExpectedHash(publishedHash.current);
       setError("");
       setOutcome(null);
     }
@@ -218,7 +275,7 @@ export default function VerifyPackagePage() {
             />
             <p className="mt-1 text-[13px] text-slate-600">
               Don&apos;t have it?{" "}
-              <a href={RESULT_PACKAGE_URL} download className="text-[#1b4779] hover:underline">
+              <a href={resultPackageUrl()} download className="text-[#1b4779] hover:underline">
                 Download the official result package
               </a>
               .
@@ -244,8 +301,8 @@ export default function VerifyPackagePage() {
               className="w-full rounded border border-slate-400 px-3 py-2 font-mono text-[13px] focus:outline-none focus:ring-2 focus:ring-[#1f538d]"
             />
             <p id="expected-help" className="mt-1 text-[13px] text-slate-600">
-              Filled in with the fingerprint published on the results page. You can paste one
-              from another trusted source instead.
+              {hashNotice ||
+                "Filled in with the fingerprint published on the results page. You can paste one from another trusted source instead."}
             </p>
           </div>
 

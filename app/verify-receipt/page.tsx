@@ -3,12 +3,13 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { mainHeader } from "../../components/styles";
+import { ApiError } from "../../lib/api";
 import { formatDateTime } from "../../lib/results";
 import {
-  MOCK_RECEIPTS,
   RECEIPT_ALPHABET,
   RECEIPT_GROUP_LENGTH,
   RECEIPT_LENGTH,
+  verifyReceipt,
   type ReceiptRecord,
 } from "../../lib/receipts";
 
@@ -75,18 +76,20 @@ export default function VerifyReceiptPage() {
     setError("");
     setChecking(true);
 
+    let found: ReceiptRecord | null;
+    try {
+      found = await verifyReceipt(receipt);
+    } catch (lookupError) {
+      setError(
+        lookupError instanceof ApiError && lookupError.status === 429
+          ? "Too many attempts. Please wait a minute and try again."
+          : "Your receipt could not be checked right now. Please try again later."
+      );
+      return;
+    } finally {
+      setChecking(false);
+    }
 
-
-
-    // TODO: send the receipt code to the backend to check it.
-    // The backend should rate-limit lookups so receipt codes cannot be guessed.
-    // Mock lookup until the backend is ready:
-    const found = MOCK_RECEIPTS[receipt];
-
-
-
-
-    setChecking(false);
     if (!found) {
       // ONE general message, so the page does not reveal anything extra
       setError("No ballot was found for this receipt code. Check the code and try again.");

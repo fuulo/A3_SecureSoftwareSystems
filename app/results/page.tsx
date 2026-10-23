@@ -1,13 +1,16 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { mainHeader, subHeader } from "../../components/styles";
 import {
-  publishedResults,
-  RESULT_PACKAGE_SHA256,
-  RESULT_PACKAGE_URL,
+  fetchPublishedResults,
   formatDateTime,
   formatNumber,
   formatPercent,
+  resultPackageUrl,
   type Contest,
+  type PublishedResults,
 } from "../../lib/results";
 
 function ContestResults({ contest }: { contest: Contest }) {
@@ -41,7 +44,7 @@ function ContestResults({ contest }: { contest: Contest }) {
               const share = formatPercent(candidate.votes, formalVotes);
               return (
                 <tr
-                  key={candidate.name}
+                  key={candidate.id}
                   className="border-t border-slate-200 odd:bg-white even:bg-slate-50"
                 >
                   <td className="px-4 py-3">
@@ -77,8 +80,62 @@ function ContestResults({ contest }: { contest: Contest }) {
   );
 }
 
+// Shown while loading, when nothing is published yet, or when the API cannot be reached
+function Notice({ title, message }: { title: string; message: string }) {
+  return (
+    <div className="flex min-h-[60vh] items-center justify-center px-6 py-12">
+      <div className="w-full max-w-lg rounded-lg border border-slate-300 bg-white p-8 text-center shadow-lg">
+        <h1 className={`${mainHeader} mb-2`}>{title}</h1>
+        <p className="mb-6">{message}</p>
+        <Link href="/" className="text-[13px] capitalize text-[#1b4779] hover:underline">
+          Back to start page
+        </Link>
+      </div>
+    </div>
+  );
+}
+
 export default function ResultsPage() {
-  const { election, contests } = publishedResults;
+  const [results, setResults] = useState<PublishedResults | null>(null);
+  const [state, setState] = useState<"loading" | "loaded" | "error">("loading");
+
+  useEffect(() => {
+    let active = true;
+    fetchPublishedResults()
+      .then((published) => {
+        if (!active) return;
+        setResults(published);
+        setState("loaded");
+      })
+      .catch(() => {
+        if (active) setState("error");
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (state === "loading") {
+    return <Notice title="Published Results" message="Loading the published results..." />;
+  }
+  if (state === "error") {
+    return (
+      <Notice
+        title="Results Unavailable"
+        message="The published results could not be loaded. Please try again later."
+      />
+    );
+  }
+  if (!results) {
+    return (
+      <Notice
+        title="Published Results"
+        message="No results have been published yet. Results appear here once the count is final."
+      />
+    );
+  }
+
+  const { election, contests } = results.package;
 
   const summary = [
     { label: "Status", value: election.status },
@@ -113,8 +170,8 @@ export default function ResultsPage() {
         ))}
 
         <p className="mb-8 text-[13px] text-slate-600">
-          Counts show first preference votes only. Distribution of preferences is not
-          modelled in this mock system.
+          Counts show first preference votes only (Senate votes by group). Distribution
+          of preferences is not modelled in this mock system.
         </p>
 
         <section id="result-package" className="mb-0">
@@ -131,11 +188,11 @@ export default function ResultsPage() {
 
           <div className="mt-4 rounded-lg border border-slate-300 bg-slate-50 p-4">
             <p className="mb-1 text-[13px] font-semibold">Published SHA-256 fingerprint</p>
-            <p className="break-all font-mono text-[13px]">{RESULT_PACKAGE_SHA256}</p>
+            <p className="break-all font-mono text-[13px]">{results.sha256}</p>
           </div>
 
           <a
-            href={RESULT_PACKAGE_URL}
+            href={resultPackageUrl()}
             download
             className="mt-4 inline-block text-[13px] capitalize text-[#1b4779] hover:underline"
           >
