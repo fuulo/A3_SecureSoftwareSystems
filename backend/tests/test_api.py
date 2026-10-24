@@ -62,6 +62,12 @@ def test_voter_endpoint_requires_a_bearer_token():
         ("POST", "/api/delegate/elections/election_1/candidates", {"name": "Alex Candidate", "partyId": "party_1", "chamber": "house", "divisionId": "div_1", "ballotPosition": 1}),
         ("PATCH", "/api/delegate/elections/election_1/candidates/candidate_1", {"name": "Alex Candidate"}),
         ("POST", "/api/delegate/elections/election_1/candidates/candidate_1/withdraw", {"reason": "Withdrew"}),
+        ("GET", "/api/delegate/elections/election_1/change-requests", None),
+        ("POST", "/api/delegate/elections/election_1/change-requests/request_1/approve", None),
+        ("POST", "/api/delegate/elections/election_1/change-requests/request_1/reject", {"reason": "Incorrect"}),
+        ("GET", "/api/admin/staff/change-requests", None),
+        ("POST", "/api/admin/staff/change-requests/request_1/approve", None),
+        ("POST", "/api/admin/staff/change-requests/request_1/reject", {"reason": "Incorrect"}),
     ],
 )
 def test_every_staff_endpoint_requires_a_bearer_token(method, path, body):
@@ -79,6 +85,10 @@ def test_every_staff_endpoint_requires_a_bearer_token(method, path, body):
         ("aecEmployee", "/api/delegate/elections/election_1/candidates"),
         ("admin", "/api/employee/enrolments"),
         ("admin", "/api/delegate/elections/election_1/candidates"),
+        ("admin", "/api/delegate/elections/election_1/change-requests"),
+        ("aecEmployee", "/api/delegate/elections/election_1/change-requests"),
+        ("commissionerDelegate", "/api/admin/staff/change-requests"),
+        ("aecEmployee", "/api/admin/staff/change-requests"),
     ],
 )
 def test_wrong_staff_role_is_denied_and_audited(monkeypatch, role, path):

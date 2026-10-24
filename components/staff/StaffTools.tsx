@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useParams, usePathname } from "next/navigation";
-import { apiRequest } from "@/lib/api";
+import { apiRequest, ChangeRequest, ChangeRequestList } from "@/lib/api";
 import { useStaff } from "@/components/requirestaff";
 import { mainHeader, buttonStyle } from "@/components/styles";
 import { Banner } from "@/components/staff/Banner";
+import { ChangeRequestPanel } from "@/components/staff/ChangeRequestPanel";
 import { ConfirmModal } from "@/components/staff/ConfirmModal";
 import { DataColumn, DataTable } from "@/components/staff/DataTable";
 import { StatusBadge } from "@/components/staff/StatusBadge";
@@ -44,6 +45,7 @@ export default function StaffTools() {
   const [electionId, setElectionId] = useState("");
   const [electionName, setElectionName] = useState("");
   const [candidateOptions, setCandidateOptions] = useState<Row>({});
+  const [changeRequests, setChangeRequests] = useState<ChangeRequestList>({ pending: [], recent: [] });
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -107,8 +109,10 @@ export default function StaffTools() {
         const result = await apiRequest<Row[]>(`/api/delegate/elections/${encodeURIComponent(id)}/candidates`);
         setRows(result);
         setCandidateOptions(await apiRequest<Row>(`/api/delegate/elections/${encodeURIComponent(id)}/options`));
+        setChangeRequests(await apiRequest<ChangeRequestList>(`/api/delegate/elections/${encodeURIComponent(id)}/change-requests`));
       } else if (path.endsWith("/admin/staff")) {
         setRows(await apiRequest<Row[]>("/api/admin/staff"));
+        setChangeRequests(await apiRequest<ChangeRequestList>("/api/admin/staff/change-requests"));
       } else if (path.endsWith("/admin/ip-whitelist")) {
         setRows(await apiRequest<Row[]>("/api/admin/ip-ranges"));
         const myIp = await apiRequest<{ ipAddress: string }>("/api/admin/my-ip");
@@ -255,7 +259,7 @@ export default function StaffTools() {
     if (editingStaff) {
       await run(() => sendJson(`/api/admin/staff/${encodeURIComponent(text(editingStaff, "staffId"))}`, "PATCH", {
         name: form.name, role: form.role, stateId: form.stateId, active: form.active === "true",
-      }), "Staff account updated.");
+      }), "Staff changes submitted for approval by another admin.");
       setEditingStaff(null);
     } else {
       if (form.password !== form.confirmPassword) {
@@ -270,10 +274,17 @@ export default function StaffTools() {
       await run(() => sendJson("/api/admin/staff", "POST", {
         name: form.name, email: form.email, role: form.role, stateId: form.stateId,
         password: form.password,
-      }), "Staff account created. Share the password with the staff member securely.");
+      }), "Staff account submitted for approval by another admin. Once it is approved, share the password with the staff member securely.");
     }
     setForm({});
   };
+
+  const reviewStaffRequest = (request: ChangeRequest, decision: "approve" | "reject", reason?: string) =>
+    run(() => sendJson(
+      `/api/admin/staff/change-requests/${encodeURIComponent(request.requestId)}/${decision}`,
+      "POST",
+      decision === "reject" ? { reason } : undefined,
+    ), decision === "approve" ? "Change approved and applied." : "Change rejected. Nothing was changed.");
 
   const submitIpCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -293,7 +304,7 @@ export default function StaffTools() {
   const submitStaffDeactivate = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!pendingStaff || form.confirmName !== text(pendingStaff, "name")) return;
-    void run(() => apiRequest(`/api/admin/staff/${encodeURIComponent(text(pendingStaff, "staffId"))}`, { method: "DELETE" }), "Staff account deactivated.");
+    void run(() => apiRequest(`/api/admin/staff/${encodeURIComponent(text(pendingStaff, "staffId"))}`, { method: "DELETE" }), "Deactivation submitted for approval by another admin.");
     setPendingStaff(null);
     setForm({});
   };
@@ -387,13 +398,13 @@ export default function StaffTools() {
 
   const homeCards = profile?.role === "admin"
     ? [
-      ["/staff/admin/staff", "Staff accounts", "Create and manage staff access."],
+      ["/staff/admin/staff", "Staff accounts", "Propose staff changes and approve other admins’ requests."],
       ["/staff/admin/ip-whitelist", "IP allowlist", "Manage staff network access."],
       ["/staff/admin/audit-log", "Audit log", "Review and verify staff activity."],
       ["/staff/admin/elections", "Elections", "Create elections and advance their phases."],
     ]
     : profile?.role === "commissionerDelegate"
-      ? [["/staff/employee/candidates", "Candidates", "Create, edit and withdraw candidates."]]
+      ? [["/staff/employee/candidates", "Candidates", "Propose candidate changes and review other delegates’ requests."]]
       : [
         ["/staff/employee/enrolments", "Enrolments", "Review pending voter applications."],
         ["/staff/employee/voters/new", "Register voter", "Create an enrolled voter account."],
@@ -529,7 +540,7 @@ export default function StaffTools() {
           `/api/delegate/elections/${encodeURIComponent(electionId)}/candidates/${encodeURIComponent(text(editingCandidate, "candidateId"))}`,
           "PATCH",
           update,
-        ), "Candidate updated.");
+        ), "Candidate changes submitted for approval by another delegate.");
         setEditingCandidate(null);
         setForm({});
         return;
@@ -541,23 +552,32 @@ export default function StaffTools() {
         groupId: form.chamber === "senate" ? (form.groupId || null) : null,
         ballotPosition: Number(form.ballotPosition),
       };
-      void run(() => sendJson(`/api/delegate/elections/${encodeURIComponent(electionId)}/candidates`, "POST", payload), "Candidate created.");
+      void run(() => sendJson(`/api/delegate/elections/${encodeURIComponent(electionId)}/candidates`, "POST", payload), "Candidate submitted for approval by another delegate.");
       setForm({});
     };
+    const reviewCandidateRequest = (request: ChangeRequest, decision: "approve" | "reject", reason?: string) =>
+      run(() => sendJson(
+        `/api/delegate/elections/${encodeURIComponent(electionId)}/change-requests/${encodeURIComponent(request.requestId)}/${decision}`,
+        "POST",
+        decision === "reject" ? { reason } : undefined,
+      ), decision === "approve" ? "Change approved and applied." : "Change rejected. Nothing was changed.");
+    const awaitingMyReview = changeRequests.pending.filter((item) => item.requestedBy !== profile?.staffId).length;
+    const pendingTargets = new Set(changeRequests.pending.map((item) => item.targetId));
     const setupPhase = text((candidateOptions.election ?? {}) as Row, "status") === "setup";
     const filteredCandidates = rows.filter((row) =>
       (!candidateFilters.chamber || text(row, "chamber") === candidateFilters.chamber) &&
       (!candidateFilters.divisionId || text(row, "divisionId") === candidateFilters.divisionId) &&
       (!candidateFilters.stateId || text(row, "stateId") === candidateFilters.stateId),
     );
-    content = <><PageHeading title="Candidate management" help={`${electionName || "Election"} · only candidates within your state are accessible.`} />
+    content = <><PageHeading title="Candidate management" help={`${electionName || "Election"} · only candidates within your state are accessible. Changes need approval from another delegate.`} />
+      {awaitingMyReview > 0 && <div className="mb-4"><Banner>{awaitingMyReview} change request(s) from other delegates await your review below.</Banner></div>}
       <div className="mb-4 grid gap-3 rounded border bg-white p-4 sm:grid-cols-3">
         <label className="space-y-1 text-sm font-semibold"><span>Chamber</span><select className={inputStyle} value={candidateFilters.chamber} onChange={(event) => setCandidateFilters((old) => ({ ...old, chamber: event.target.value }))}><option value="">All</option><option value="house">House</option><option value="senate">Senate</option></select></label>
         <label className="space-y-1 text-sm font-semibold"><span>Division</span><select className={inputStyle} value={candidateFilters.divisionId} onChange={(event) => setCandidateFilters((old) => ({ ...old, divisionId: event.target.value }))}><option value="">All divisions</option>{candidateDivisions.map((item) => <option key={text(item,"divisionId")} value={text(item,"divisionId")}>{text(item,"name")}</option>)}</select></label>
         <label className="space-y-1 text-sm font-semibold"><span>State</span><select className={inputStyle} value={candidateFilters.stateId} onChange={(event) => setCandidateFilters((old) => ({ ...old, stateId: event.target.value }))}><option value="">All in your scope</option>{profile?.stateId && <option value={profile.stateId}>{profile.stateId}</option>}</select></label>
       </div>
       {setupPhase && <form onSubmit={submitCandidate} className="mb-6 grid gap-4 rounded-lg border bg-white p-6 sm:grid-cols-2">
-        <h2 className="text-lg font-semibold sm:col-span-2">Create candidate</h2>
+        <h2 className="text-lg font-semibold sm:col-span-2">{editingCandidate ? "Edit candidate" : "Propose a new candidate"}</h2>
         {formField("candidateName", "Candidate name")}
         {!editingCandidate && selectField("chamber", "Chamber", [{ value: "house", label: "House" }, { value: "senate", label: "Senate" }])}
         {selectField("partyId", "Party", parties.map((v) => ({ value: text(v, "partyId"), label: text(v, "name") })))}
@@ -566,7 +586,7 @@ export default function StaffTools() {
           : form.chamber === "senate" && selectField("groupId", "Senate group", groups.map((v) => ({ value: text(v, "groupId"), label: text(v, "displayName") })))}
         {formField("ballotPosition", "Ballot position", "number")}
         <div className="flex gap-3 sm:col-span-2">
-          <button disabled={busy} className={buttonSecondary}>{editingCandidate ? "Save candidate changes" : "Create candidate"}</button>
+          <button disabled={busy} className={buttonSecondary}>{editingCandidate ? "Submit changes for approval" : "Submit candidate for approval"}</button>
           {editingCandidate && <button type="button" className={buttonSecondary} onClick={() => { setEditingCandidate(null); setForm({}); }}>Cancel edit</button>}
         </div>
       </form>}
@@ -575,7 +595,7 @@ export default function StaffTools() {
         { key: "divisionId", label: "Division" }, { key: "stateId", label: "State" },
         { key: "partyId", label: "Party" }, { key: "ballotPosition", label: "Position" },
         { key: "withdrawn", label: "Withdrawn", render: (row) => row.withdrawn === true ? "Yes" : "No" },
-        { key: "actions", label: "Action", render: (row) => row.withdrawn === true ? "—" : <div className="flex gap-3">
+        { key: "actions", label: "Action", render: (row) => row.withdrawn === true ? "—" : pendingTargets.has(text(row, "candidateId")) ? <span className="text-sm text-slate-600">Change awaiting approval</span> : <div className="flex gap-3">
           {setupPhase && <button disabled={busy} className="text-[#1f538d] underline" onClick={() => {
             setEditingCandidate(row);
             setForm({
@@ -591,26 +611,32 @@ export default function StaffTools() {
             <button disabled={busy} className="text-red-800 underline" onClick={() => setPendingCandidate(row)}>Withdraw</button>}
         </div> },
       ], "No candidates match these filters.", filteredCandidates)}
-      {pendingCandidate && <ConfirmModal title="Withdraw candidate" confirmLabel="Withdraw candidate" busy={busy} onCancel={() => setPendingCandidate(null)} onConfirm={(event) => {
+      {pendingCandidate && <ConfirmModal title="Withdraw candidate" confirmLabel="Submit withdrawal" busy={busy} onCancel={() => setPendingCandidate(null)} onConfirm={(event) => {
         event.preventDefault();
-        void run(() => sendJson(`/api/delegate/elections/${encodeURIComponent(electionId)}/candidates/${encodeURIComponent(text(pendingCandidate, "candidateId"))}/withdraw`, "POST", { reason: withdrawReason }), "Candidate withdrawn.");
+        void run(() => sendJson(`/api/delegate/elections/${encodeURIComponent(electionId)}/candidates/${encodeURIComponent(text(pendingCandidate, "candidateId"))}/withdraw`, "POST", { reason: withdrawReason }), "Withdrawal submitted for approval by another delegate.");
         setPendingCandidate(null); setWithdrawReason("");
       }}>
-        <p className="mb-3">Withdrawal does not delete the candidate. Provide a reason.</p>
+        <p className="mb-3">Withdrawal does not delete the candidate, and another delegate must approve it before it takes effect. Provide a reason.</p>
         <textarea className={inputStyle} required maxLength={500} rows={4} value={withdrawReason} onChange={(event) => setWithdrawReason(event.target.value)} aria-label="Withdrawal reason" />
       </ConfirmModal>}
+      {profile && <ChangeRequestPanel title="Candidate changes awaiting approval" reviewerLabel="another delegate"
+        requests={changeRequests} currentStaffId={profile.staffId} busy={busy} loading={loading}
+        onApprove={(request) => reviewCandidateRequest(request, "approve")}
+        onReject={(request, reason) => reviewCandidateRequest(request, "reject", reason)} />}
     </>;
   } else if (path?.endsWith("/admin/staff")) {
-    content = <><PageHeading title="Staff accounts" />
+    const staffAwaitingMyReview = changeRequests.pending.filter((item) => item.requestedBy !== profile?.staffId).length;
+    content = <><PageHeading title="Staff accounts" help="Changes to staff accounts need approval from another admin before they take effect." />
+      {staffAwaitingMyReview > 0 && <div className="mb-4"><Banner>{staffAwaitingMyReview} change request(s) from other admins await your review below.</Banner></div>}
       <form onSubmit={(event) => void submitStaffCreate(event)} className="mb-6 grid gap-4 rounded-lg border bg-white p-6 sm:grid-cols-2">
-        <h2 className="text-lg font-semibold sm:col-span-2">{editingStaff ? "Edit staff account" : "Create staff account"}</h2>
+        <h2 className="text-lg font-semibold sm:col-span-2">{editingStaff ? "Edit staff account" : "Propose a staff account"}</h2>
         {formField("name", "Name")}{!editingStaff && formField("email", "Email", "email")}
         {!editingStaff && formField("password", "Password (min 12 characters)", "password")}
         {!editingStaff && formField("confirmPassword", "Confirm password", "password")}
         {selectField("role", "Role", [{ value:"aecEmployee",label:"AEC employee" },{ value:"commissionerDelegate",label:"Commissioner delegate" },{ value:"admin",label:"Admin" }])}
         {selectField("stateId", "State", ["ACT","NSW","NT","QLD","SA","TAS","VIC","WA"].map((v)=>({value:v,label:v})))}
         {editingStaff && <label className="flex items-center gap-2 text-sm font-semibold"><input type="checkbox" checked={form.active === "true"} onChange={(event) => setForm((old) => ({ ...old, active: String(event.target.checked) }))} />Active</label>}
-        <div className="flex gap-3 sm:col-span-2"><button disabled={busy} className={buttonSecondary}>{editingStaff ? "Save changes" : "Create staff"}</button>{editingStaff && <button type="button" className={buttonSecondary} onClick={() => { setEditingStaff(null); setForm({}); }}>Cancel</button>}</div>
+        <div className="flex gap-3 sm:col-span-2"><button disabled={busy} className={buttonSecondary}>{editingStaff ? "Submit changes for approval" : "Submit staff account for approval"}</button>{editingStaff && <button type="button" className={buttonSecondary} onClick={() => { setEditingStaff(null); setForm({}); }}>Cancel</button>}</div>
       </form>
       {rowsTable([
         { key: "name", label: "Name" }, { key: "role", label: "Role" }, { key: "stateId", label: "State" },
@@ -624,10 +650,14 @@ export default function StaffTools() {
           {row.active === true && <button disabled={busy} className="text-red-800 underline" onClick={() => setPendingStaff(row)}>Deactivate</button>}
         </div> },
       ])}
-      {pendingStaff && <ConfirmModal title="Deactivate staff account" confirmLabel="Deactivate" busy={busy} onCancel={() => setPendingStaff(null)} onConfirm={submitStaffDeactivate}>
-        <p className="mb-3">Type <strong>{text(pendingStaff, "name")}</strong> to confirm. Deactivation ends this account’s access.</p>
+      {pendingStaff && <ConfirmModal title="Deactivate staff account" confirmLabel="Submit deactivation" busy={busy} onCancel={() => setPendingStaff(null)} onConfirm={submitStaffDeactivate}>
+        <p className="mb-3">Type <strong>{text(pendingStaff, "name")}</strong> to confirm. Deactivation ends this account’s access once another admin approves it.</p>
         <input className={inputStyle} required value={form.confirmName ?? ""} onChange={(event) => setForm((old) => ({ ...old, confirmName: event.target.value }))} aria-label="Type the staff member name" />
       </ConfirmModal>}
+      {profile && <ChangeRequestPanel title="Staff changes awaiting approval" reviewerLabel="another admin"
+        requests={changeRequests} currentStaffId={profile.staffId} busy={busy} loading={loading}
+        onApprove={(request) => reviewStaffRequest(request, "approve")}
+        onReject={(request, reason) => reviewStaffRequest(request, "reject", reason)} />}
     </>;
   } else if (path?.endsWith("/admin/ip-whitelist")) {
     content = <><PageHeading title="IP allowlist" help="Use narrow CIDR ranges. Keep at least one active range that includes your current IP." />

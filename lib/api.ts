@@ -114,3 +114,22 @@ export type StaffProfile = {
 export function getStaffProfile() {
   return apiRequest<StaffProfile>("/api/me");
 }
+
+export type ChangeRequest = {
+  requestId: string;
+  action: string;
+  status: "pending" | "approved" | "rejected";
+  summary: string;
+  targetId?: string | null;
+  payload?: unknown;
+  before?: unknown;
+  requestedBy: string;
+  requestedByName?: string | null;
+  requestedAt?: string | null;
+  reviewedBy?: string | null;
+  reviewedByName?: string | null;
+  reviewedAt?: string | null;
+  reviewReason?: string | null;
+};
+
+export type ChangeRequestList = { pending: ChangeRequest[]; recent: ChangeRequest[] };
