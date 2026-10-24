@@ -6,6 +6,7 @@
 1. [Collections Overview](#collections-overview)
 2. [Collections Details](#collections-details)
    - [Staff](#staff)
+   - [Change Requests (approval workflow)](#change-requests-approval-workflow)
    - [Voters](#voters)
    - [Elections](#elections)
    - [Audit Logs](#audit-logs)
@@ -17,6 +18,7 @@
 ```text
 /config/allowedIpRanges/{locationId}
 /staff/{staffId}
+/staffChangeRequests/{requestId}      ← admin staff changes awaiting a second admin
 /voters/{voterId}
     /addressHistory/{changeId}
 /elections/{electionId}
@@ -25,6 +27,7 @@
     /parties/{partyId}
     /senateGroups/{groupId}            ← column groupings on Senate ballot
     /candidates/{candidateId}
+    /candidateChangeRequests/{requestId}  ← delegate candidate changes awaiting a second delegate
     /pollingPlaces/{placeId}
         /terminals/{terminalId}
     /houseBallots/{ballotId}
@@ -77,6 +80,64 @@ configuration document (`config/allowedIpRanges/ranges/{locationId}`).
   "lastLoginAt": "timestamp"
 }
 ```
+
+---
+
+## Change Requests (approval workflow)
+
+Candidate changes and staff account changes follow a maker-checker rule: the person who
+requests a change can never apply it. A commissioner delegate's candidate create, edit or
+withdraw, and an admin's staff create, edit or deactivate, are stored as a pending change
+request. Nothing else changes until a *different* person approves it. Approval re-validates
+the change against current data and applies it in one transaction; rejection records a reason
+and changes nothing.
+
+Candidate requests live in `elections/{electionId}/candidateChangeRequests/{requestId}` and
+may be decided by any other active delegate in the same `stateId`. Staff requests live in
+`staffChangeRequests/{requestId}` and may be decided by any other active admin.
+
+```jsonc
+{
+  "action": "candidate.create | candidate.edit | candidate.withdraw | staff.create | staff.edit | staff.delete",
+  "status": "pending | approved | rejected",
+  "targetType": "candidate | staff",
+  "targetId": "cand_vic_302",            // pre-allocated id for creates
+  "targetPath": "/elections/fed2028/candidates/cand_vic_302",
+  "summary": "Edit candidate Alex Nguyen",
+  "payload": { "changes": { "ballotPosition": 3 } },   // what approval will apply (see below)
+  "before": { "ballotPosition": 2 },     // values of the affected fields when requested; null for creates
+  "electionId": "fed2028",               // candidate requests only
+  "stateId": "VIC",                      // candidate requests only: the requester's state, which scopes reviewers
+  "requestedBy": "staffId",
+  "requestedByName": "Jane Citizen",
+  "requestedAt": "timestamp",
+  "reviewedBy": null,
+  "reviewedByName": null,
+  "reviewedAt": null,
+  "reviewReason": null                   // required when rejected
+}
+```
+
+`payload` by action:
+
+| Action | `payload` |
+| ------ | --------- |
+| `candidate.create` | `{ "candidate": { ...the validated candidate fields } }` |
+| `candidate.edit` | `{ "changes": { ...only the edited fields } }` |
+| `candidate.withdraw` | `{ "reason": "..." }` |
+| `staff.create` | `{ "name", "email", "role", "stateId", "authUid" }` |
+| `staff.edit` | `{ "changes": { ...only the edited fields } }` |
+| `staff.delete` | `{}` |
+
+Rules:
+
+- A reviewer must differ from `requestedBy`; delegates must also share the request's `stateId`.
+- Only one `pending` request may exist for a given `targetId`.
+- A decided request is never reopened or modified again.
+- `staff.create` never stores the password. The Firebase Auth account is created *disabled* when the
+  request is made; approval enables it and rejection deletes it.
+- For approved candidate creates, `enteredBy` on the candidate is the requester. For approved
+  withdrawals, `withdrawnBy` is the requester. The reviewer is recorded on the request and in the audit log.
 
 ---
 
@@ -430,6 +491,7 @@ once and never stored.
 | --------------------- | ------------------------------------------------------------------------------------------- |
 | Staff actions (voters)     | Registration, address changes                                                          |
 | Staff actions (candidates) | Entry, edits, withdrawals, manual exclusions                                           |
+| Change requests       | `<action>.request` when submitted, `<action>.reject` when rejected; approval writes the `<action>` itself, with the reviewer as actor |
 | Voting events         | Rejected votes (outside geofence, unregistered terminal, double vote attempt)               |
 | Counting              | Counts/recounts started and completed, finalisation                                         |
 | Exports               | Results shared externally                                                                   |
@@ -464,6 +526,7 @@ once and never stored.
 
 #### Field notes
 
+- **Change requests**: `candidate.create`, `candidate.edit`, `candidate.withdraw`, `staff.create`, `staff.edit` and `staff.delete` are written only when a change is *approved* (the actor is the reviewer and `reason` names the request and who requested it). Submitting writes `<action>.request` and rejecting writes `<action>.reject`, each with the acting staff member as actor. Each transaction writes exactly one audit entry so the hash chain stays linear.
 - **`action`**: examples so far are `voter.register`, `voter.addressUpdate`, `candidate.create`, `candidate.exclude`, `count.start`, `results.export`. Add more as needed.
 - **`category`**: `enrolment`, `candidateManagement`, `voting`, `counting`, `export`, `security`, `admin`.
 - **`reason`**: explains the outcome, e.g. a rejected vote → `"outside_geofence"`, a recount → `"court_order_2028/17"`.

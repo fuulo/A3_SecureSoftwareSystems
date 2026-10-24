@@ -42,6 +42,10 @@ service cloud.firestore {
     match /staff/{staffId} {
       allow read, write: if false;
     }
+    // Pending staff changes are read and decided only through the staff API.
+    match /staffChangeRequests/{requestId} {
+      allow read, write: if false;
+    }
     match /config/{document=**} {
       allow read, write: if false;
     }

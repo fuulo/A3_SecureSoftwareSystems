@@ -179,6 +179,39 @@ Delete the demo election (`elections/<id>`), its entry in `publishedResults`,
 and the voters with `demo: true` from the Firebase console. Receipts for the
 election are in `receipts`, filtered by `electionId`.
 
+## Two-person approval of candidate and staff changes
+
+Commissioner delegates cannot change candidates on their own, and admins cannot change staff
+accounts on their own. Creating, editing, withdrawing or deactivating submits a *change request*;
+another person must approve it before anything is applied.
+
+| Change | Submitted by | Decided by |
+| --- | --- | --- |
+| Candidate create, edit, withdraw | Commissioner delegate | A different delegate in the **same state** |
+| Staff account create, edit, deactivate | Admin | A different admin |
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST/PATCH /api/delegate/elections/{id}/candidates[/{candidateId}[/withdraw]]` | Submit a candidate change (returns `202` with a `requestId`) |
+| `GET /api/delegate/elections/{id}/change-requests` | Pending and recently decided candidate requests for your state |
+| `POST /api/delegate/elections/{id}/change-requests/{requestId}/approve` or `/reject` | Decide a candidate request (`reject` needs a `reason`) |
+| `POST/PATCH/DELETE /api/admin/staff[/{staffId}]` | Submit a staff change (returns `202` with a `requestId`) |
+| `GET /api/admin/staff/change-requests` | Pending and recently decided staff requests |
+| `POST /api/admin/staff/change-requests/{requestId}/approve` or `/reject` | Decide a staff request |
+
+The API enforces the rules, not the browser. Approval re-validates against current data (election phase,
+state scope, ballot positions, last-admin protection) and applies the change in one transaction.
+See [firestore-schema.md](./firestore-schema.md#change-requests-approval-workflow) for the data model.
+
+Operational consequences to plan for:
+
+- **At least two active admins** are needed before any staff account can be created, edited or
+  deactivated through the API, and **at least two active delegates per state** before that state's
+  candidates can change. Provision a second admin out-of-band, as for the first.
+- A staff account's sign-in is created disabled when requested and only enabled on approval, so no
+  password is ever stored in Firestore. Rejecting a request deletes that sign-in account.
+- Deploy the two new composite indexes in [firestore.indexes.json](./firestore.indexes.json).
+
 ## Authentication-code demo warning
 
 The six-digit authentication code in `/verify` is a demo placeholder: any six

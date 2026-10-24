@@ -121,6 +121,10 @@ class Withdrawal(StrictModel):
     reason: Annotated[str, Field(min_length=1, max_length=500)]
 
 
+class ChangeRequestRejection(StrictModel):
+    reason: Annotated[str, Field(min_length=1, max_length=500)]
+
+
 BallotChoice = Annotated[str, Field(min_length=1, max_length=120)]
 
 

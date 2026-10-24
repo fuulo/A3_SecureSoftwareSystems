@@ -4,7 +4,7 @@ export type DataColumn<T> = {
   render?: (row: T) => React.ReactNode;
 };
 
-export function DataTable<T extends { id?: string; voterId?: string; staffId?: string; candidateId?: string }>({
+export function DataTable<T extends { id?: string; voterId?: string; staffId?: string; candidateId?: string; requestId?: string }>({
   columns,
   rows,
   emptyMessage = "No records found.",
@@ -22,7 +22,7 @@ export function DataTable<T extends { id?: string; voterId?: string; staffId?: s
         </thead>
         <tbody className="divide-y divide-slate-200">
           {rows.map((row, index) => (
-            <tr key={row.id ?? row.voterId ?? row.staffId ?? row.candidateId ?? index}>
+            <tr key={row.id ?? row.voterId ?? row.staffId ?? row.candidateId ?? row.requestId ?? index}>
               {columns.map((column) => (
                 <td key={String(column.key)} className="px-4 py-3 align-top">
                   {column.render ? column.render(row) : String((row as Record<string, unknown>)[String(column.key)] ?? "—")}
