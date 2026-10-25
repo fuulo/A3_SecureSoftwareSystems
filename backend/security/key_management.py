@@ -29,10 +29,7 @@ def ensure_encryption_key() -> tuple[str, str]:
     active_documents = (
         db.collection(KEY_COLLECTION)
         .where("status", "==", "active")
-        .order_by(
-            "createdAt",
-            direction=firestore.Query.DESCENDING,
-        )
+        .order_by("createdAt", direction=firestore.Query.DESCENDING)
         .limit(1)
         .stream()
     )
@@ -47,10 +44,7 @@ def ensure_encryption_key() -> tuple[str, str]:
                 "Active encryption key has no key material"
             )
 
-        if created_at and is_key_due_for_rotation(
-            created_at,
-            now,
-        ):
+        if created_at and is_key_due_for_rotation(created_at, now):
             rotate_encryption_keys()
             return get_active_encryption_key()
 
@@ -65,9 +59,7 @@ def ensure_encryption_key() -> tuple[str, str]:
             "status": "active",
             "algorithm": "AES-256-GCM",
             "createdAt": firestore.SERVER_TIMESTAMP,
-            "rotationDueAt": now + timedelta(
-                days=KEY_ROTATION_DAYS
-            ),
+            "rotationDueAt": now + timedelta(days=KEY_ROTATION_DAYS),
         }
     )
 
@@ -81,10 +73,7 @@ def get_active_encryption_key() -> tuple[str, str]:
     documents = (
         db.collection(KEY_COLLECTION)
         .where("status", "==", "active")
-        .order_by(
-            "createdAt",
-            direction=firestore.Query.DESCENDING,
-        )
+        .order_by("createdAt", direction=firestore.Query.DESCENDING)
         .limit(1)
         .stream()
     )
@@ -122,22 +111,16 @@ def rotate_encryption_keys() -> str:
             }
         )
 
-    new_key_id = (
-        f"key-{now.strftime('%Y%m%d%H%M%S')}"
-    )
+    new_key_id = f"key-{now.strftime('%Y%m%d%H%M%S')}"
     new_key_material = generate_key()
 
-    db.collection(KEY_COLLECTION).document(
-        new_key_id
-    ).set(
+    db.collection(KEY_COLLECTION).document(new_key_id).set(
         {
             "keyMaterial": new_key_material,
             "status": "active",
             "algorithm": "AES-256-GCM",
             "createdAt": firestore.SERVER_TIMESTAMP,
-            "rotationDueAt": now + timedelta(
-                days=KEY_ROTATION_DAYS
-            ),
+            "rotationDueAt": now + timedelta(days=KEY_ROTATION_DAYS),
         }
     )
 
@@ -168,9 +151,7 @@ def get_encryption_service() -> EncryptionService:
             active_key_id = key_id
 
     if active_key_id is None:
-        active_key_id, active_key_material = (
-            ensure_encryption_key()
-        )
+        active_key_id, active_key_material = ensure_encryption_key()
         keys[active_key_id] = active_key_material
 
     return EncryptionService(
