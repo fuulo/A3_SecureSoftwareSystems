@@ -5,8 +5,54 @@ import { Permanent_Marker } from "next/font/google";
 
 const handwriting = Permanent_Marker ({ subsets: ["latin"], weight: "400"});
 
+const iconStyle = "h-7 w-7";
+
+// Public pages anyone can use without logging in
+const publicPages = [
+  {
+    href: "/results",
+    title: "Published Results",
+    description:
+      "See the official results for each House division and Senate state, including turnout and the published fingerprint.",
+    action: "View results",
+    icon: (
+      <svg className={iconStyle} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M3 3v18h18" />
+        <path d="M7 16v-4M12 16V8M17 16v-7" />
+      </svg>
+    ),
+  },
+  {
+    href: "/verify-receipt",
+    title: "Verify Your Receipt",
+    description:
+      "Enter the receipt code you were given after voting to confirm your ballot was recorded. Your vote stays secret.",
+    action: "Verify receipt",
+    icon: (
+      <svg className={iconStyle} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M6 2h12v20l-3-2-3 2-3-2-3 2z" />
+        <path d="M9 11l2 2 4-4" />
+      </svg>
+    ),
+  },
+  {
+    href: "/verify-package",
+    title: "Verify Result Package",
+    description:
+      "Check that a downloaded result package is genuine and that its totals add up. The check runs in your browser.",
+    action: "Verify package",
+    icon: (
+      <svg className={iconStyle} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M12 2l8 3v6c0 5-3.5 9-8 11-4.5-2-8-6-8-11V5z" />
+        <path d="M9 12l2 2 4-4" />
+      </svg>
+    ),
+  },
+];
+
 export default function Home() {
   return (
+    <>
       <div className="mx-auto grid max-w-6xl gap-8 px-6 pb-4 pt-8 min-[600px]:grid-cols-[1fr_minmax(240px,320px)]">
         <main>
           <h1 className={`${mainHeader} mb-4`}>How to Vote?</h1>
@@ -79,5 +125,40 @@ export default function Home() {
           </div>
         </aside>
       </div>
+
+      {/* Results and verification, open to everyone */}
+      <section
+        aria-labelledby="results-and-verification"
+        className="mx-auto max-w-6xl px-6 pb-12 pt-6"
+      >
+        <h2 id="results-and-verification" className={`${mainHeader} mb-1`}>
+          Election Results and Verification
+        </h2>
+        <p className="mb-6">
+          Anyone can view the results and check them. No log in is needed.
+        </p>
+
+        <div className="grid gap-6 md:grid-cols-3">
+          {publicPages.map((page) => (
+            <article
+              key={page.href}
+              className="flex flex-col rounded-lg border border-slate-300 bg-white p-6 shadow-lg"
+            >
+              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-[#EAF3FC] text-[#1f538d]">
+                {page.icon}
+              </div>
+              <h3 className={`${subHeader} mb-2`}>{page.title}</h3>
+              <p className="mb-6 flex-1 text-slate-700">{page.description}</p>
+              <Link
+                href={page.href}
+                className="block rounded-lg bg-[#1f538d] px-6 py-3 text-center text-[18px] font-bold text-white shadow-[0_8px_20px_rgba(0,0,0,0.35)] transition duration-200 hover:-translate-y-1 hover:bg-[#1b4779] hover:shadow-[0_14px_28px_rgba(0,0,0,0.4)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1f538d] active:translate-y-0 active:shadow-[0_4px_10px_rgba(0,0,0,0.3)]"
+              >
+                {page.action}
+              </Link>
+            </article>
+          ))}
+        </div>
+      </section>
+    </>
   );
 }
