@@ -21,6 +21,9 @@ _login_lock = threading.Lock()
 _ip_cache: tuple[float, list[tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, dict[str, Any]]]] = (0, [])
 _ip_lock = threading.Lock()
 _IP_CACHE_TTL = 30
+# A freshly issued ID token carries Google's time; if this server's clock is
+# slightly behind, a zero tolerance rejects it as "used too early"
+_TOKEN_CLOCK_SKEW_SECONDS = 10
 
 
 async def verify_token(
@@ -30,7 +33,9 @@ async def verify_token(
     if not credentials:
         raise HTTPException(status_code=401, detail="Authentication required")
     try:
-        claims = auth.verify_id_token(credentials.credentials, check_revoked=True)
+        claims = auth.verify_id_token(
+            credentials.credentials, check_revoked=True, clock_skew_seconds=_TOKEN_CLOCK_SKEW_SECONDS
+        )
         auth_time = int(claims.get("auth_time", 0))
     except Exception as exc:
         logger.info("Rejected Firebase token: %s: %s", exc.__class__.__name__, exc)
