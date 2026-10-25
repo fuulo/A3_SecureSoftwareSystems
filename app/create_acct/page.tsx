@@ -593,6 +593,7 @@ export default function CreateAccountPage() {
                 type="text"
                 autoComplete="given-name"
                 required
+                maxLength={100}
                 value={form.givenName}
                 onChange={handleChange}
                 className={fieldClass(
@@ -621,6 +622,7 @@ export default function CreateAccountPage() {
                 type="text"
                 autoComplete="family-name"
                 required
+                maxLength={100}
                 value={form.surname}
                 onChange={handleChange}
                 className={fieldClass(
@@ -802,6 +804,7 @@ export default function CreateAccountPage() {
               name="address"
               autoComplete="street-address"
               required
+              maxLength={200}
               rows={3}
               value={form.address}
               onChange={handleChange}
