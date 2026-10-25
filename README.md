@@ -11,14 +11,52 @@ NEXT_PUBLIC_FIREBASE_API_KEY=...
 NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=...
 NEXT_PUBLIC_FIREBASE_PROJECT_ID=...
 NEXT_PUBLIC_FIREBASE_APP_ID=...
-NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
+NEXT_PUBLIC_API_BASE_URL=https://127.0.0.1:8000
 ```
 
 Then run:
 
 ```powershell
 npm install
+npm run cert:dev   # once: creates the localhost certificate in certs/
 npm run dev
+```
+
+The site is served only at `https://localhost:3000`. For the browser to trust
+the certificate, install the [mkcert](https://github.com/FiloSottile/mkcert)
+development CA once (`mkcert -install`) before running `npm run cert:dev`; the
+script signs the certificate with that CA. Without it, the certificate is
+self-signed and the browser shows "Not secure". After installing the CA, run
+`npm run cert:dev -- --force` to replace an existing certificate.
+
+Do not use `next dev --experimental-https`: Next.js's built-in HTTPS server
+accepts TLS 1.2 and does not log rejected connections.
+
+### TLS 1.3 enforcement
+
+`npm run dev` and `npm start` run [server.mjs](./server.mjs) instead of the
+built-in Next.js server. Its listener ([server/secure-listener.mjs](./server/secure-listener.mjs))
+checks every connection before Next.js reads any request data:
+
+| Connection | Result | Logged reason |
+| --- | --- | --- |
+| Plain HTTP (first byte is not a TLS handshake record) | Closed | `notTls` |
+| No data sent within 10 seconds | Closed | `noClientHello` |
+| TLS 1.0 / 1.1, or any other failed handshake | Closed | `handshakeFailed` |
+| Negotiated TLS 1.2 | Closed after the handshake | `protocolBelowTls13` |
+| TLS 1.3 with a cipher outside the TLS 1.3 AEAD suites | Closed | `cipherNotAllowed` |
+| TLS 1.3 with an allowed cipher | Passed to Next.js | — |
+
+Rejections are printed to the console and appended as JSON lines to
+`logs/tls-security.log`. Override the defaults with `TLS_CERT_FILE`,
+`TLS_KEY_FILE`, `TLS_LOG_FILE`, `HOST` and `PORT`.
+
+To check it by hand (Git Bash or any shell with OpenSSL and curl):
+
+```bash
+openssl s_client -connect localhost:3000 -tls1_3   # accepted: "Protocol: TLSv1.3"
+openssl s_client -connect localhost:3000 -tls1_2   # rejected: protocolBelowTls13
+curl http://localhost:3000                         # rejected: notTls
 ```
 
 ## Run the staff API
@@ -28,21 +66,30 @@ Install Python dependencies and configure `backend/.env` (do not commit credenti
 ```dotenv
 GOOGLE_APPLICATION_CREDENTIALS=C:\path\to\service-account.json
 FIREBASE_PROJECT_ID=a3-voting-system-dev
-ALLOWED_ORIGINS=http://localhost:3000
+ALLOWED_ORIGINS=https://localhost:3000
 ```
 
-Start the API from the repository root:
+Start the API from the repository root. It uses the same certificate as the
+frontend, so run `npm run cert:dev` first:
 
 ```powershell
 python -m pip install -r backend/requirements.txt
-python -m uvicorn backend.main:app --reload
+python -m backend.tls_server --reload
 ```
 
 If .env file is not detected:
 
 ```powershell
-python -m uvicorn backend.main:app --reload --env-file backend\.env
+python -m backend.tls_server --reload --env-file backend\.env
 ```
+
+The API is served only at `https://127.0.0.1:8000`.
+[backend/tls_server.py](./backend/tls_server.py) applies the same checks as
+the frontend listener (see [TLS 1.3 enforcement](#tls-13-enforcement)) before
+FastAPI reads any request data, and appends rejections to
+`logs/tls-security-api.log`. Do not start the API with plain `uvicorn`, which
+serves unencrypted HTTP. `TLS_CERT_FILE`, `TLS_KEY_FILE` and `TLS_LOG_FILE` in
+`backend/.env` override the defaults; `--host` and `--port` are also accepted.
 For local emulator use, set `FIRESTORE_EMULATOR_HOST` and
 `FIREBASE_AUTH_EMULATOR_HOST` in the API process environment and start the
 Firestore and Auth emulators with `firebase emulators:start --only firestore,auth`.
@@ -95,7 +142,7 @@ real pages.
    `GOOGLE_APPLICATION_CREDENTIALS` must point to a service-account key for the
    project (Firebase console → Project settings → Service accounts → Generate
    new private key). Keep the key outside the repository and never commit it.
-3. Make sure `.env.local` contains `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`.
+3. Make sure `.env.local` contains `NEXT_PUBLIC_API_BASE_URL=https://127.0.0.1:8000`.
 
 #### 2. Seed a demo election
 
@@ -133,11 +180,11 @@ The seed refuses to run while another election is `open`. Other options:
 #### 3. Start both servers
 
 ```powershell
-.venv\Scripts\python -m uvicorn backend.main:app --reload --env-file backend\.env
+.venv\Scripts\python -m backend.tls_server --reload --env-file backend\.env
 npm run dev
 ```
 
-`http://127.0.0.1:8000/health` should return `{"status":"ok"}`.
+`https://127.0.0.1:8000/health` should return `{"status":"ok"}`.
 
 #### 4. Published Results: `/results`
 
