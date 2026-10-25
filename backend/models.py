@@ -149,3 +149,32 @@ class ReceiptCheck(StrictModel):
 
 class LockoutReport(StrictModel):
     email: Annotated[str, Field(min_length=3, max_length=254, pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")]
+
+
+class VoterSelfRegistration(StrictModel):
+    """Details submitted by a voter creating their own account.
+
+    Identity and security-sensitive fields such as authUid, enrolmentStatus,
+    divisionId and voted are intentionally excluded because the backend must
+    derive or control them.
+    """
+
+    givenNames: Name
+    surname: Name
+    dateOfBirth: Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}$")]
+    govId: GovId
+    email: Annotated[
+        str,
+        Field(min_length=3, max_length=254, pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$"),
+    ]
+    address: Annotated[str, Field(min_length=10, max_length=200)]
+    phoneNumber: Annotated[
+        str,
+        Field(min_length=8, max_length=20, pattern=r"^\+?[0-9 ]{8,20}$"),
+    ] | None = None
+
+
+class VoterSelfRegistrationResult(StrictModel):
+    voterId: Annotated[str, Field(min_length=1, max_length=120)]
+    enrolmentStatus: Literal["pending"]
+    message: Annotated[str, Field(min_length=1, max_length=200)]

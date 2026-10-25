@@ -23,6 +23,7 @@ from backend.routers import (
     employee_voters,
     public_results,
     voter_ballots,
+    voter_registration,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -44,6 +45,7 @@ app.include_router(employee_voters.router)
 app.include_router(employee_candidates.router)
 app.include_router(admin_results.router)
 app.include_router(voter_ballots.router)
+app.include_router(voter_registration.router)
 app.include_router(public_results.router)
 app.include_router(auth_lockout.router)
 
@@ -93,6 +95,7 @@ async def validation_failure(request: Request, exc: RequestValidationError):
 
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_failure(request: Request, exc: RateLimitExceeded):
+    logging.info("Rate limit exceeded for %s", request.url.path)
     _record_request_failure(request, outcome="failed", reason="rate_limit_exceeded")
     return _rate_limit_exceeded_handler(request, exc)
 
