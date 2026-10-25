@@ -486,10 +486,28 @@ once and never stored.
   "electionId": "fed2028",
   "packageJson": "{...}",     // exact bytes served as the downloadable result package
   "sha256": "hex",            // fingerprint of packageJson, also written to the audit log
+  "receiptsSha256": "hex",    // fingerprint of the receipt list (also in the package)
+  "archive": {                // R-06 write-once copy; null if ARCHIVE_REQUIRED was off
+    "provider": "backblaze-b2",
+    "bucket": "voting-test",
+    "retentionMode": "compliance | governance",
+    "retainUntil": "timestamp",   // 7 years (2557 days) after publishedAt
+    "files": [
+      { "name": "elections/fed2028/result-package-<sha256>.json", "fileId": "...", "sha256": "hex", "size": 1234 },
+      { "name": "elections/fed2028/receipts-<receiptsSha256>.txt", "fileId": "...", "sha256": "hex", "size": 1234 }
+    ]
+  },
   "publishedAt": "timestamp",
   "publishedBy": "staffId"
 }
 ```
+
+**Receipt list (R-06).** Every receipt hash for the election, sorted, one per
+line, with no times or voter references. It is archived with the package and
+served at `GET /api/public/results/receipts.txt`, so anyone can check a receipt
+against a copy without the API. Receipts are never written to the audit log
+individually, because audit entries name their actor and that would link a
+voter to their receipt.
 
 ---
 

@@ -50,3 +50,14 @@ def issue_receipt(tx: Any, election_id: str) -> tuple[str, datetime]:
     tx.create(db.collection("receipts").document(receipt_hash(code)),
               {"electionId": election_id, "recordedAt": recorded_at})
     return format_receipt(code), recorded_at
+
+
+def receipt_list(election_id: str) -> bytes:
+    """The public receipt list: every receipt hash for an election, sorted, one per line.
+
+    It holds no times or voter references. Its SHA-256 goes into the result
+    package, so anyone can check a receipt against a copy without this API, and
+    there are far too many possible codes to work one out from its hash.
+    """
+    hashes = sorted(item.id for item in db.collection("receipts").where("electionId", "==", election_id).stream())
+    return "".join(f"{value}\n" for value in hashes).encode("ascii")

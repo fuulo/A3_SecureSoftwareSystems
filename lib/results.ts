@@ -33,19 +33,37 @@ export type ResultPackage = {
     senateBallotsCast?: number;
     votersMarkedVoted?: number;
     receiptsIssued: number;
+    // Added in package version 4: SHA-256 of the published receipt list
+    receiptsSha256?: string;
   };
   contests: Contest[];
+};
+
+// Where the package and receipt list are archived, locked for 7 years (backend/archive.py)
+export type ResultArchive = {
+  provider: string;
+  bucket: string;
+  retentionMode: "compliance" | "governance";
+  retainUntil: string;
+  files: { name: string; fileId: string; sha256: string; size: number }[];
 };
 
 export type PublishedResults = {
   // SHA-256 fingerprint recorded when the package was published
   sha256: string;
   package: ResultPackage;
+  // Missing for results published before archiving was added
+  archive?: ResultArchive | null;
 };
 
 // Where voters can download the official result package (the exact published bytes)
 export function resultPackageUrl() {
   return publicApiUrl("/api/public/results/package.json");
+}
+
+// Every receipt hash for the published election, one per line
+export function receiptListUrl() {
+  return publicApiUrl("/api/public/results/receipts.txt");
 }
 
 // Latest published results, or null if nothing has been published yet
