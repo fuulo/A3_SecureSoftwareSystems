@@ -1,43 +1,74 @@
 "use client";
 
-// The six-digit code is a demo placeholder and is not real second-factor security.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ApiError, getStaffProfile } from "@/lib/api";
 import {
-  mainHeader,
-  buttonStyle,
-} from "@/components/styles";
+  PhoneAuthProvider,
+  PhoneMultiFactorGenerator,
+  RecaptchaVerifier,
+  type PhoneMultiFactorInfo,
+} from "firebase/auth";
+import { auth } from "@/lib/firebase";
+import { ApiError } from "@/lib/api";
+import { getDashboardPath } from "@/lib/dashboard";
+import {
+  getMfaErrorMessage,
+  getPendingMfa,
+  setPendingMfa,
+} from "@/lib/mfa";
+import { mainHeader, buttonStyle } from "@/components/styles";
 
 const CODE_LENGTH = 6;
+const RESEND_SECONDS = 60;
+
 const inputStyle =
   "w-full rounded border border-slate-400 px-3 py-2 text-center text-[28px] font-semibold tracking-[0.4em] focus:outline-none focus:ring-2 focus:ring-[#1f538d]";
 
-const linkStyle =
-  "text-[13px] text-[#1b4779] hover:underline";
+const linkStyle = "text-[13px] text-[#1b4779] hover:underline";
+
+type Step = "send" | "code";
 
 export default function AuthenticationCodePage() {
   const router = useRouter();
 
+  const [step, setStep] = useState<Step>("send");
   const [code, setCode] = useState("");
+  const [verificationId, setVerificationId] = useState("");
+  const [maskedPhone, setMaskedPhone] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [isSubmitting, setIsSubmitting] =
-    useState(false);
+  const [isSending, setIsSending] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isVerified, setIsVerified] = useState(false);
+  const [secondsLeft, setSecondsLeft] = useState(0);
 
+  const recaptchaRef = useRef<RecaptchaVerifier | null>(null);
+
+  // If no first-step login is waiting (for example after a refresh),
+  // go back to the login page
   useEffect(() => {
-    const pendingUid = sessionStorage.getItem(
-      "pendingAuthCodeUid"
-    );
-
-    if (!pendingUid) {
+    if (!getPendingMfa()) {
       router.replace("/login");
     }
   }, [router]);
 
-  function handleCodeChange(
-    event: React.ChangeEvent<HTMLInputElement>
-  ) {
+  // Count down for the "Send a new code" button
+  useEffect(() => {
+    if (secondsLeft <= 0) return;
+
+    const timer = setTimeout(() => setSecondsLeft((s) => s - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [secondsLeft]);
+
+  // Remove the reCAPTCHA when leaving the page
+  useEffect(() => {
+    return () => {
+      recaptchaRef.current?.clear();
+      recaptchaRef.current = null;
+    };
+  }, []);
+
+  function handleCodeChange(event: React.ChangeEvent<HTMLInputElement>) {
     const digitsOnly = event.target.value
       .replace(/\D/g, "")
       .slice(0, CODE_LENGTH);
@@ -47,81 +78,116 @@ export default function AuthenticationCodePage() {
     setMessage("");
   }
 
-  async function handleSubmit(
-    event: React.FormEvent<HTMLFormElement>
-  ) {
+  // Sends the text message (also used by "Send a new code")
+  async function sendCode() {
+    const resolver = getPendingMfa();
+
+    if (!resolver) {
+      router.replace("/login");
+      return;
+    }
+
+    const hint = resolver.hints.find(
+      (item) => item.factorId === PhoneMultiFactorGenerator.FACTOR_ID
+    );
+
+    if (!hint) {
+      setError("No phone number is set up for this account.");
+      return;
+    }
+
+    setError("");
+    setMessage("");
+    setIsSending(true);
+
+    try {
+      const recaptcha = new RecaptchaVerifier(auth, "recaptcha-container", {
+        size: "invisible",
+      });
+      recaptchaRef.current = recaptcha;
+
+      const id = await new PhoneAuthProvider(auth).verifyPhoneNumber(
+        { multiFactorHint: hint, session: resolver.session },
+        recaptcha
+      );
+
+      setVerificationId(id);
+      setMaskedPhone((hint as PhoneMultiFactorInfo).phoneNumber ?? "");
+      setCode("");
+      setStep("code");
+      setSecondsLeft(RESEND_SECONDS);
+      setMessage("A code has been sent by text message.");
+    } catch (firebaseError) {
+      setError(getMfaErrorMessage(firebaseError));
+    } finally {
+      // A reCAPTCHA token works only once, so start fresh next time
+      recaptchaRef.current?.clear();
+      recaptchaRef.current = null;
+      setIsSending(false);
+    }
+  }
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     setError("");
     setMessage("");
 
-    const pendingUid = sessionStorage.getItem(
-      "pendingAuthCodeUid"
-    );
+    // Step 1: check the text message code with Firebase.
+    // If this already worked and only the dashboard lookup failed,
+    // the check is skipped and only the lookup is tried again.
+    if (!isVerified) {
+      const resolver = getPendingMfa();
 
-    if (!pendingUid) {
-      setError(
-        "Your login session has expired. Please log in again."
-      );
-      router.replace("/login");
-      return;
-    }
+      if (!resolver) {
+        setError("Your login session has expired. Please log in again.");
+        router.replace("/login");
+        return;
+      }
 
-    if (code.length !== CODE_LENGTH) {
-      setError(
-        `Please enter the ${CODE_LENGTH}-digit authentication code.`
-      );
-      return;
-    }
+      if (code.length !== CODE_LENGTH) {
+        setError(`Please enter the ${CODE_LENGTH}-digit authentication code.`);
+        return;
+      }
 
-    setIsSubmitting(true);
-
-    try {
-      /*
-       * DEMO MODE:
-       * The code is accepted after the correct number of
-       * digits has been entered.
-       *
-       * Replace this block with server-side or Firebase
-       * MFA verification before using this application
-       * in production.
-       */
-
-      sessionStorage.removeItem(
-        "pendingAuthCodeUid"
-      );
-
-      sessionStorage.removeItem(
-        "pendingAuthCodeEmail"
-      );
-
-      sessionStorage.setItem(
-        "authenticationCodeVerified",
-        "true"
-      );
+      setIsSubmitting(true);
 
       try {
-        const staff = await getStaffProfile();
-        router.push(staff.role === "admin"
-          ? "/staff/admin/dashboard"
-          : "/staff/employee/dashboard");
-      } catch (profileError) {
-        if (profileError instanceof ApiError &&
-            (profileError.status === 403 || profileError.status === 404)) {
-          router.push("/voter/dashboard");
-        } else {
-          throw profileError;
-        }
+        const credential = PhoneAuthProvider.credential(verificationId, code);
+        const assertion = PhoneMultiFactorGenerator.assertion(credential);
+
+        // Firebase completes the sign-in only now, after the second step
+        await resolver.resolveSignIn(assertion);
+      } catch (firebaseError) {
+        setError(getMfaErrorMessage(firebaseError));
+        setIsSubmitting(false);
+        return;
       }
-    } catch (verificationError) {
-      if (verificationError instanceof ApiError && verificationError.status === 401) {
+
+      setPendingMfa(null);
+      setIsVerified(true);
+
+      // Temporary: other pages may still look for this flag. It is only set
+      // after the real check above. Replace those checks with a Firebase check
+      // (see the notes) and then delete this line.
+      sessionStorage.setItem("authenticationCodeVerified", "true");
+    } else {
+      setIsSubmitting(true);
+    }
+
+    // Step 2: work out which dashboard to open
+    try {
+      router.replace(await getDashboardPath());
+    } catch (profileError) {
+      if (profileError instanceof ApiError && profileError.status === 401) {
         sessionStorage.removeItem("authenticationCodeVerified");
         router.replace("/login");
         return;
       }
-      console.error(verificationError);
+
+      console.error(profileError);
       setError(
-        "The authentication code could not be processed."
+        "You are signed in, but your account details could not be loaded. Please try again."
       );
     } finally {
       setIsSubmitting(false);
@@ -129,14 +195,7 @@ export default function AuthenticationCodePage() {
   }
 
   function handleBackToLogin() {
-    sessionStorage.removeItem(
-      "pendingAuthCodeUid"
-    );
-
-    sessionStorage.removeItem(
-      "pendingAuthCodeEmail"
-    );
-
+    setPendingMfa(null);
     router.push("/login");
   }
 
@@ -147,75 +206,114 @@ export default function AuthenticationCodePage() {
           Authentication Code
         </h1>
 
-        <p className="mb-8 text-center text-slate-600">
-          Enter the authentication code to continue.
-        </p>
-
-        <form
-          onSubmit={handleSubmit}
-          className="space-y-5"
-        >
-          <div>
-            <label
-              htmlFor="authenticationCode"
-              className="mb-1 block font-semibold"
-            >
-              Authentication code
-            </label>
-
-            <input
-              id="authenticationCode"
-              name="authenticationCode"
-              type="text"
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              pattern="[0-9]*"
-              maxLength={CODE_LENGTH}
-              required
-              autoFocus
-              value={code}
-              onChange={handleCodeChange}
-              aria-invalid={error ? true : undefined}
-              className={`${inputStyle} ${
-                error ? "border-red-500" : ""
-              }`}
-            />
-
-            <p className="mt-2 text-center text-xs text-slate-500">
-              Enter exactly {CODE_LENGTH} numbers.
+        {step === "send" && (
+          <>
+            <p className="mb-8 text-center text-slate-600">
+              We will send a {CODE_LENGTH}-digit code by text message to the
+              phone number set up for your account.
             </p>
-          </div>
 
-          {error && (
-            <p
-              role="alert"
-              className="rounded border border-red-300 bg-red-50 px-3 py-2 text-[13px] text-red-700"
-            >
-              {error}
+            <div className="space-y-5">
+              {error && (
+                <p
+                  role="alert"
+                  className="rounded border border-red-300 bg-red-50 px-3 py-2 text-[13px] text-red-700"
+                >
+                  {error}
+                </p>
+              )}
+
+              <button
+                type="button"
+                onClick={sendCode}
+                disabled={isSending}
+                className={`${buttonStyle} w-full disabled:cursor-not-allowed disabled:opacity-60`}
+              >
+                {isSending ? "Sending..." : "Send code"}
+              </button>
+            </div>
+          </>
+        )}
+
+        {step === "code" && (
+          <>
+            <p className="mb-8 text-center text-slate-600">
+              Enter the {CODE_LENGTH}-digit code sent to {maskedPhone}.
             </p>
-          )}
 
-          {message && (
-            <p
-              role="status"
-              className="rounded border border-green-300 bg-green-50 px-3 py-2 text-[13px] text-green-700"
-            >
-              {message}
-            </p>
-          )}
+            <form onSubmit={handleSubmit} className="space-y-5">
+              <div>
+                <label
+                  htmlFor="authenticationCode"
+                  className="mb-1 block font-semibold"
+                >
+                  Authentication code
+                </label>
 
-          <button
-            type="submit"
-            disabled={isSubmitting}
-            className={`${buttonStyle} w-full disabled:cursor-not-allowed disabled:opacity-60`}
-          >
-            {isSubmitting
-              ? "Checking code..."
-              : "Continue"}
-          </button>
-        </form>
+                <input
+                  id="authenticationCode"
+                  name="authenticationCode"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  pattern="[0-9]*"
+                  maxLength={CODE_LENGTH}
+                  required
+                  autoFocus
+                  value={code}
+                  onChange={handleCodeChange}
+                  aria-invalid={error ? true : undefined}
+                  className={`${inputStyle} ${error ? "border-red-500" : ""}`}
+                />
 
-        <div className="mt-6 text-center">
+                <p className="mt-2 text-center text-xs text-slate-500">
+                  Enter exactly {CODE_LENGTH} numbers.
+                </p>
+              </div>
+
+              {error && (
+                <p
+                  role="alert"
+                  className="rounded border border-red-300 bg-red-50 px-3 py-2 text-[13px] text-red-700"
+                >
+                  {error}
+                </p>
+              )}
+
+              {message && (
+                <p
+                  role="status"
+                  className="rounded border border-green-300 bg-green-50 px-3 py-2 text-[13px] text-green-700"
+                >
+                  {message}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className={`${buttonStyle} w-full disabled:cursor-not-allowed disabled:opacity-60`}
+              >
+                {isSubmitting ? "Checking code..." : "Continue"}
+              </button>
+            </form>
+
+            <div className="mt-6 text-center">
+              <button
+                type="button"
+                onClick={sendCode}
+                disabled={isSending || isSubmitting || isVerified || secondsLeft > 0}
+                className={`${linkStyle} disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline`}
+              >
+                {secondsLeft > 0
+                  ? `Send a new code in ${secondsLeft}s`
+                  : "Send a new code"}
+              </button>
+            </div>
+          </>
+        )}
+
+        <div className="mt-4 text-center">
           <button
             type="button"
             onClick={handleBackToLogin}
@@ -224,6 +322,9 @@ export default function AuthenticationCodePage() {
             Back to login
           </button>
         </div>
+
+        {/* Used by the invisible reCAPTCHA */}
+        <div id="recaptcha-container" />
       </section>
     </main>
   );

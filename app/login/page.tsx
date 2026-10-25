@@ -2,13 +2,18 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { signInWithEmailAndPassword } from "firebase/auth";
+import {
+  getMultiFactorResolver,
+  signInWithEmailAndPassword,
+  type MultiFactorError,
+} from "firebase/auth";
 import { useRouter } from "next/navigation";
 import { auth } from "@/lib/firebase";
 import {
   mainHeader,
   buttonStyle,
 } from "@/components/styles";
+import { setPendingMfa } from "@/lib/mfa";
 
 const inputStyle =
   "w-full rounded border border-slate-400 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#1f538d]";
@@ -74,46 +79,38 @@ export default function LoginPage() {
     const cleanEmail = email.trim().toLowerCase();
 
     if (!cleanEmail || !password) {
-      setError(
-        "Please enter your email address and password."
-      );
+      setError("Please enter your email address and password.");
       return;
     }
 
     setIsSubmitting(true);
 
     try {
-      const credential =
-        await signInWithEmailAndPassword(
-          auth,
-          cleanEmail,
-          password
-        );
+      await signInWithEmailAndPassword(auth, cleanEmail, password);
 
-      /*
-       * Store only the authenticated user's UID.
-       * Do not store the password or authentication code.
-       */
-      sessionStorage.setItem(
-        "pendingAuthCodeUid",
-        credential.user.uid
-      );
-
-      sessionStorage.setItem(
-        "pendingAuthCodeEmail",
-        cleanEmail
-      );
-
-      // Empty the input boxes before leaving this page
+      // The password was enough, so this account has no phone set up yet
       setEmail("");
       setPassword("");
-
-      router.replace("/verify");
+      router.replace("/mfa_setup");
     } catch (firebaseError) {
+      // This is expected for accounts with a phone set up:
+      // Firebase asks for the second step
+      if (
+        (firebaseError as { code?: string }).code ===
+        "auth/multi-factor-auth-required"
+      ) {
+        setPendingMfa(
+          getMultiFactorResolver(auth, firebaseError as MultiFactorError)
+        );
+        setEmail("");
+        setPassword("");
+        console.log("Pending login saved:", true)
+        router.replace("/verify");
+        return;
+      }
+
       console.error(firebaseError);
-      setError(
-        getLoginErrorMessage(firebaseError)
-      );
+      setError(getLoginErrorMessage(firebaseError));
     } finally {
       setIsSubmitting(false);
     }

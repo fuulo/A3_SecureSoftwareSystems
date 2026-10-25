@@ -93,7 +93,7 @@ export default function EmailVerificationPage() {
       await reload(user);
 
       if (auth.currentUser?.emailVerified) {
-        router.replace("/login");
+        router.replace("/mfa_setup");
         return;
       }
 
@@ -112,21 +112,16 @@ export default function EmailVerificationPage() {
   }
 
   async function handleLogout() {
-    await signOut(auth);
+    try {
+      await signOut(auth);
+    } finally {
+      sessionStorage.removeItem("authenticationCodeVerified");
+      sessionStorage.removeItem("pendingAuthCodeUid");
+      sessionStorage.removeItem("pendingAuthCodeEmail");
 
-    sessionStorage.removeItem(
-      "authenticationCodeVerified"
-    );
-
-    sessionStorage.removeItem(
-      "pendingAuthCodeUid"
-    );
-
-    sessionStorage.removeItem(
-      "pendingAuthCodeEmail"
-    );
-
-    router.replace("/login");
+      // Full page load, so nothing from the old account stays in memory
+      window.location.replace("/login");
+    }
   }
 
   if (isChecking) {

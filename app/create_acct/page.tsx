@@ -5,6 +5,7 @@ import { useState } from "react";
 import {
   createUserWithEmailAndPassword,
   sendEmailVerification,
+  type User,
 } from "firebase/auth";
 import {
   doc,
@@ -29,9 +30,6 @@ const NAME_PATTERN =
 const GOV_ID_PATTERN =
   /^[A-Za-z0-9]{6,20}$/;
 
-const PHONE_PATTERN = /^(?:\+?61|0)[2-478]\d{8}$/;
-
-
 const EMAIL_PATTERN =
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -44,7 +42,6 @@ type FormData = {
   dob: string;
   govId: string;
   address: string;
-  phonenumber: string;
   email: string;
   password: string;
   confirmPassword: string;
@@ -60,7 +57,6 @@ const emptyForm: FormData = {
   dob: "",
   govId: "",
   address: "",
-  phonenumber: "",
   email: "",
   password: "",
   confirmPassword: "",
@@ -144,10 +140,6 @@ function getAge(dob: string): number | null {
   }
 
   return age;
-}
-
-function cleanPhone(value: string): string {
-  return value.replace(/[\s()-]/g, "");
 }
 
 function getFirebaseErrorMessage(
@@ -368,6 +360,34 @@ export default function CreateAccountPage() {
     }`;
   }
 
+  // Step 2 of the account journey: save the profile, then send the
+  // verification email. The phone number is added later, on /mfa_setup,
+  // because Firebase only allows it after the email is verified.
+  async function finishAccountSetup(user: User) {
+    const email = form.email.trim().toLowerCase();
+
+    await setDoc(
+      doc(db, "users", user.uid),
+      {
+        givenName: form.givenName.trim(),
+        surname: form.surname.trim(),
+        dob: form.dob,
+        govId: form.govId.replace(/\s/g, "").trim(),
+        address: form.address.trim(),
+        email,
+        role: "voter",
+        hasVoted: false,
+        enrolmentStatus: "not-enrolled",
+        eligibilityStatus: "pending",
+        emailVerified: false,
+        createdAt: serverTimestamp(),
+      }
+    );
+
+    await sendEmailVerification(user);
+    router.replace("/email_verification");
+  }
+
   function validate(): FormErrors {
     const errors: FormErrors = {};
 
@@ -383,9 +403,6 @@ export default function CreateAccountPage() {
 
     const address =
       form.address.trim();
-
-    const phonenumber = 
-      cleanPhone(form.phonenumber);
 
     const email =
       form.email.trim().toLowerCase();
@@ -459,12 +476,6 @@ export default function CreateAccountPage() {
         "Please enter a valid residential address.";
     }
 
-    if (!phonenumber) {
-      errors.phonenumber = "Please enter your phone number.";
-    } else if (!PHONE_PATTERN.test(phonenumber)) {
-      errors.phonenumber = "Please enter a valid Australian phone number.";
-    }
-
     if (!email) {
       errors.email =
         "Please enter your email address.";
@@ -525,6 +536,7 @@ export default function CreateAccountPage() {
         .trim()
         .toLowerCase();
 
+      // Step 1: create the account
       const credential =
         await createUserWithEmailAndPassword(
           auth,
@@ -532,43 +544,8 @@ export default function CreateAccountPage() {
           form.password
         );
 
-      await sendEmailVerification(
-        credential.user
-      );
-
-      await setDoc(
-        doc(
-          db,
-          "users",
-          credential.user.uid
-        ),
-        {
-          givenName:
-            form.givenName.trim(),
-          surname:
-            form.surname.trim(),
-          dob: form.dob,
-          govId: form.govId
-            .replace(/\s/g, "")
-            .trim(),
-          address:
-            form.address.trim(),
-          email,
-          role: "voter",
-          hasVoted: false,
-          enrolmentStatus:
-            "not-enrolled",
-          eligibilityStatus:
-            "pending",
-          emailVerified: false,
-          createdAt:
-            serverTimestamp(),
-        }
-      );
-
-      router.replace(
-        "/email_verification"
-      );
+      // Step 2: save the profile and send the verification email
+      await finishAccountSetup(credential.user);
     } catch (firebaseError) {
       console.error(firebaseError);
 
@@ -840,38 +817,6 @@ export default function CreateAccountPage() {
 
           <div>
             <label
-              htmlFor="phonenumber"
-              className="mb-1 block font-semibold"
-            >
-              Phone number
-            </label>
-
-            <input
-              id="phonenumber"
-              name="phonenumber"
-              type="tel"
-              inputMode="tel"
-              autoComplete="tel"
-              required
-              value={form.phonenumber}
-              onChange={handleChange}
-              className={fieldClass("phonenumber")}
-            />
-
-            {fieldErrors.phonenumber && (
-              <p className="mt-1 text-xs text-red-700">
-                {fieldErrors.phonenumber}
-              </p>
-            )}
-
-            <p className="mt-1 text-xs text-slate-500">
-              For example, 0482 069 241 or +61 482 069 241.
-            </p>
-          </div>
-
-
-          <div>
-            <label
               htmlFor="email"
               className="mb-1 block font-semibold"
             >
@@ -898,6 +843,10 @@ export default function CreateAccountPage() {
             <p className="mt-1 text-xs text-slate-500">
               A verification email will be sent to this
               address.
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              After you verify your email, you will add a
+              phone number for 2-step verification.
             </p>
           </div>
 
@@ -976,14 +925,10 @@ export default function CreateAccountPage() {
 
           <button
             type="submit"
-            disabled={
-              isSubmitting
-            }
+            disabled={isSubmitting}
             className={`${buttonStyle} w-full disabled:cursor-not-allowed disabled:opacity-60`}
           >
-            {isSubmitting
-              ? "Creating account..."
-              : "Create account"}
+            {isSubmitting ? "Creating account..." : "Create account"}
           </button>
         </form>
 
