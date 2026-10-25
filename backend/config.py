@@ -1,8 +1,11 @@
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load backend/.env by path: without one, python-dotenv may search from the
+# working directory and miss it, depending on how the API was started.
+load_dotenv(Path(__file__).with_name(".env"))
 
 
 def _as_bool(value: str | None, default: bool = False) -> bool:

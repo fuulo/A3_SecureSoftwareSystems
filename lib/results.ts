@@ -27,7 +27,11 @@ export type ResultPackage = {
     status: string;
     publishedAt: string;
     enrolledVoters: number;
+    // House ballots
     ballotsCast: number;
+    // Added in package version 3
+    senateBallotsCast?: number;
+    votersMarkedVoted?: number;
     receiptsIssued: number;
   };
   contests: Contest[];

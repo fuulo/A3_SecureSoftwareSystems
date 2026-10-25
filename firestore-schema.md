@@ -172,9 +172,13 @@ Rules:
   "createdAt": "timestamp",
   "updatedAt": "timestamp",
   "voted": true | false,
+  "votedElections": { "<electionId>": true },   // set with the ballot; counted for vote reconciliation
   "phoneNumber": "..."
 }
 ```
+
+`votedElections` records which elections the voter has voted in, so a vote in one election does not block the next.
+A record with `voted: true` but no `votedElections` (created before this field existed) is treated as having voted in every election.
 
 Self-service registration creates a pending voter document with `enrolledBy: "self"`, `divisionId: null`, `stateId` copied from the structured address, and `voted: false`. Staff rejection is recorded as `enrolmentStatus: "removed"` with `rejectionReason`, `reviewedBy`, and `reviewedAt`; this avoids conflating a rejection with an ordinary later removal in the audit history.
 
@@ -403,7 +407,15 @@ Candidate withdrawals are soft state changes. A withdrawn candidate is never del
 ```
 
 Ballots hold no voter reference and no timestamp, so they cannot be traced back
-to the voter, who only gains `voted: true`.
+to the voter, who only gains `voted: true` and `votedElections.{electionId}: true`.
+
+**Vote reconciliation (R-05).** Before an election moves from `counting` to
+`finalised`, and again before its results are published, the API checks that the
+voters with `votedElections.{electionId}: true`, the House ballots, the Senate
+ballots and the receipts for the election are all equal. A mismatch blocks the
+step and writes an `election.reconcile` audit entry (`outcome: "failed"`,
+`reason: "vote_count_mismatch"`) with the four counts; a successful finalisation
+records them in its `election.phaseChange` entry.
 
 ### `elections/{electionId}/counts/{countId}`
 

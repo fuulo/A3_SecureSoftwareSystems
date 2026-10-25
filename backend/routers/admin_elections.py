@@ -11,6 +11,7 @@ from backend.auth import staff_access
 from backend.election_defaults import write_default_structure
 from backend.firestore_client import db
 from backend.models import ElectionCreate, PhaseChange
+from backend.reconciliation import require_reconciled
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/elections", tags=["admin-elections"])
@@ -123,17 +124,26 @@ def change_phase(election_id: str, body: PhaseChange, request: Request,
             counts = list(ref.collection("counts").stream(transaction=tx))
             if any(item.get("status") != "complete" for item in counts):
                 raise HTTPException(status_code=409, detail="All counts must be complete before finalisation")
+            if reconciliation is None:
+                raise HTTPException(status_code=409, detail="Election status changed; please try again")
         after = {"status": body.to, "updatedBy": staff["staffId"], "updatedAt": firestore.SERVER_TIMESTAMP}
         if body.to == "closed":
             after["closedAt"] = firestore.SERVER_TIMESTAMP
+        audit_after: dict[str, Any] = {"status": body.to}
+        if reconciliation is not None:
+            audit_after["reconciliation"] = reconciliation
         write_audit(tx, actor=staff, action="election.phaseChange", category="admin",
                     target_type="election", target_id=election_id, target_path=ref.path,
-                    before={"status": current}, after={"status": body.to},
+                    before={"status": current}, after=audit_after,
                     outcome="success", reason=body.reason, request=request, election_id=election_id)
         tx.update(ref, after)
         return body.to
 
+    reconciliation: dict[str, Any] | None = None
     try:
+        if body.to == "finalised" and (ref.get().to_dict() or {}).get("status") == "counting":
+            # Voting has closed, so these counts cannot change before the transaction below.
+            reconciliation = require_reconciled(election_id, staff, request)
         status = change(transaction)
         return {"status": status}
     except HTTPException as exc:

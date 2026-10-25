@@ -59,6 +59,8 @@ function checkContents(text: string): Check[] {
     isCount(election.ballotsCast) &&
     isCount(election.enrolledVoters) &&
     isCount(election.receiptsIssued) &&
+    (election.senateBallotsCast === undefined || isCount(election.senateBallotsCast)) &&
+    (election.votersMarkedVoted === undefined || isCount(election.votersMarkedVoted)) &&
     Array.isArray(contests) &&
     contests.length > 0 &&
     contests.every(
@@ -85,6 +87,13 @@ function checkContents(text: string): Check[] {
   const ballotsCast = election.ballotsCast as number;
   const enrolled = election.enrolledVoters as number;
   const receiptsIssued = election.receiptsIssued as number;
+  // Added in package version 3; older packages are checked without them
+  const senateBallotsCast = isCount(election.senateBallotsCast)
+    ? election.senateBallotsCast
+    : ballotsCast;
+  const votersMarkedVoted = isCount(election.votersMarkedVoted)
+    ? election.votersMarkedVoted
+    : null;
   const typedContests = contests as {
     title: string;
     chamber: "house" | "senate";
@@ -111,16 +120,27 @@ function checkContents(text: string): Check[] {
     },
   ];
 
-  // Each voter casts one House and one Senate ballot, so each chamber's contests
-  // together must account for every ballot exactly once
-  for (const [chamber, label] of [["house", "House"], ["senate", "Senate"]] as const) {
+  // Each voter who voted cast exactly one House and one Senate ballot
+  if (votersMarkedVoted !== null) {
+    checks.push({
+      label: "One ballot per voter who voted",
+      passed: votersMarkedVoted === ballotsCast && votersMarkedVoted === senateBallotsCast,
+      detail: `${formatNumber(votersMarkedVoted)} voters marked voted, ${formatNumber(ballotsCast)} House ballots, ${formatNumber(senateBallotsCast)} Senate ballots.`,
+    });
+  }
+
+  // Each chamber's contests together must account for every ballot exactly once
+  for (const [chamber, label, cast] of [
+    ["house", "House", ballotsCast],
+    ["senate", "Senate", senateBallotsCast],
+  ] as const) {
     const total = typedContests
       .filter((c) => c.chamber === chamber)
       .reduce((sum, c) => sum + c.ballotsCast, 0);
     checks.push({
       label: `Every ballot in one contest: ${label}`,
-      passed: total === ballotsCast,
-      detail: `${formatNumber(total)} ${label} ballots across contests, ${formatNumber(ballotsCast)} ballots cast.`,
+      passed: total === cast,
+      detail: `${formatNumber(total)} ${label} ballots across contests, ${formatNumber(cast)} ballots cast.`,
     });
   }
 
