@@ -1,348 +1,276 @@
-"""Voter ballot-session endpoints.
-
-Implements atomic voting-state controls:
-
-- A voter may start only one voting session.
-- A voter who has already voted cannot start or submit another ballot.
-- A ballot can be submitted only during an active voting session.
-- Ballot content is encrypted at rest using AES-256-GCM.
-"""
-
-from __future__ import annotations
-
-from datetime import datetime, timezone
+import json
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from firebase_admin import firestore
 
-from backend.dependencies.auth import get_current_firebase_user
+from backend.auth import verify_token
 from backend.models import BallotSubmission
-from backend.security.key_management import get_encryption_service
+from backend.security.encryption import EncryptedValue
 
-router = APIRouter(
-    prefix="/api/voter/ballots",
-    tags=["voter-ballots"],
-)
+router = APIRouter(prefix="/api/voter/ballots", tags=["Voter Ballots"])
 
 VOTERS_COLLECTION = "voters"
+ELECTIONS_COLLECTION = "elections"
 BALLOTS_COLLECTION = "ballots"
-AUDIT_COLLECTION = "auditLogs"
+AUDIT_LOGS_COLLECTION = "auditLogs"
+
+SESSION_DURATION_MINUTES = 15
 
 
-def _get_voter_by_auth_uid(
-    db,
-    uid: str,
+def get_encryption_service():
+    raise NotImplementedError("Encryption service is not configured")
+
+
+async def get_current_firebase_user(
+    current_user: Any = Depends(verify_token),
+) -> dict[str, Any]:
+    if isinstance(current_user, dict):
+        return current_user
+
+    uid = getattr(current_user, "uid", None)
+
+    if not uid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired authentication token",
+        )
+
+    return {"uid": uid}
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _get_voter(
+    db: firestore.Client,
+    transaction: firestore.Transaction,
+    auth_uid: str,
 ):
-    """Return the Firestore document for the authenticated voter."""
-    documents = (
+    voters = (
         db.collection(VOTERS_COLLECTION)
-        .where("authUid", "==", uid)
+        .where("authUid", "==", auth_uid)
         .limit(1)
         .stream()
     )
 
-    for document in documents:
-        return document
+    for voter_snapshot in voters:
+        return voter_snapshot
 
     return None
 
 
-@router.post(
-    "/{election_id}/start",
-    status_code=status.HTTP_200_OK,
-    summary="Start Voting Session",
-)
-def start_voting_session(
-    election_id: str,
-    decoded_token: dict = Depends(get_current_firebase_user),
-) -> dict:
-    """Atomically mark an eligible voter as currently voting.
-
-    Prevents concurrent voting sessions and rejects voters who have already
-    voted, are not enrolled, or are not eligible.
-    """
-    uid = decoded_token["uid"]
-    db = firestore.client()
-
-    voter_document = _get_voter_by_auth_uid(db, uid)
-
-    if voter_document is None:
+def _validate_voter(voter_snapshot, election_id: str) -> dict[str, Any]:
+    if voter_snapshot is None or not voter_snapshot.exists:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Voter registration not found",
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Voter profile not found",
         )
 
-    voter_ref = voter_document.reference
-    election_ref = db.collection("elections").document(election_id)
+    voter = voter_snapshot.to_dict() or {}
 
-    @firestore.transactional
-    def start_session(transaction):
-        voter_snapshot = voter_ref.get(transaction=transaction)
-        election_snapshot = election_ref.get(transaction=transaction)
+    if voter.get("enrolmentStatus") != "approved":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Voter enrolment is not approved",
+        )
 
-        if not election_snapshot.exists:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Election not found",
-            )
+    if voter.get("eligibilityStatus") != "approved":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Voter is not eligible to vote",
+        )
 
-        election_data = election_snapshot.to_dict() or {}
+    if voter.get("voted", False):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Voter has already submitted a ballot",
+        )
 
-        if election_data.get("phase") != "open":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Voting is not currently open for this election",
-            )
+    if voter.get("voting", False):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Voter already has an active voting session",
+        )
 
-        if not voter_snapshot.exists:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Voter registration not found",
-            )
+    voted_elections = voter.get("votedElections") or {}
 
-        voter_data = voter_snapshot.to_dict() or {}
+    if voted_elections.get(election_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Voter has already voted in this election",
+        )
 
-        if voter_data.get("enrolmentStatus") != "approved":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Voter enrolment has not been approved",
-            )
+    return voter
 
-        if voter_data.get("eligibilityStatus") != "approved":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Voter is not eligible to vote",
-            )
 
-        if voter_data.get("voted") is True:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Voter has already voted in this election",
-            )
+def _get_open_election(
+    db: firestore.Client,
+    transaction: firestore.Transaction,
+    election_id: str,
+):
+    election_ref = db.collection(ELECTIONS_COLLECTION).document(election_id)
+    election_snapshot = election_ref.get(transaction=transaction)
 
-        voted_elections = voter_data.get("votedElections") or {}
+    if not election_snapshot.exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Election not found",
+        )
 
-        if election_id in voted_elections:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Voter has already voted in this election",
-            )
+    election = election_snapshot.to_dict() or {}
 
-        if voter_data.get("voting") is True:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="A voting session is already active",
-            )
+    if election.get("status") != "open" or election.get("phase") != "open":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Election is not open for voting",
+        )
+
+    return election_ref, election
+
+
+@router.post("/{election_id}/start", status_code=status.HTTP_200_OK)
+async def start_voting_session(
+    election_id: str,
+    current_user: dict[str, Any] = Depends(get_current_firebase_user),
+):
+    auth_uid = current_user["uid"]
+    db = firestore.client()
+
+    try:
+        transaction = db.transaction()
+
+        voter_snapshot = _get_voter(db, transaction, auth_uid)
+        voter = _validate_voter(voter_snapshot, election_id)
+
+        _get_open_election(db, transaction, election_id)
+
+        voter_ref = voter_snapshot.reference
+        expires_at = _utc_now() + timedelta(minutes=SESSION_DURATION_MINUTES)
 
         transaction.update(
             voter_ref,
             {
                 "voting": True,
                 "activeElectionId": election_id,
-                "votingSessionStartedAt": firestore.SERVER_TIMESTAMP,
-                "updatedAt": firestore.SERVER_TIMESTAMP,
+                "sessionExpiresAt": expires_at,
             },
         )
 
-    try:
-        start_session(db.transaction())
+        return {
+            "electionId": election_id,
+            "voting": True,
+            "expiresAt": expires_at.isoformat(),
+        }
+
     except HTTPException:
         raise
-    except Exception as exc:
+    except Exception:
+        logging.exception("Unable to start voting session")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unable to start voting session",
-        ) from exc
-
-    return {
-        "electionId": election_id,
-        "voting": True,
-        "message": "Voting session started",
-    }
-
-
-@router.post(
-    "/{election_id}/submit",
-    status_code=status.HTTP_201_CREATED,
-    summary="Submit Ballot",
-)
-def submit_ballot(
-    election_id: str,
-    body: BallotSubmission,
-    decoded_token: dict = Depends(get_current_firebase_user),
-) -> dict:
-    """Atomically submit an encrypted ballot and mark the voter as voted."""
-    uid = decoded_token["uid"]
-    db = firestore.client()
-
-    voter_document = _get_voter_by_auth_uid(db, uid)
-
-    if voter_document is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Voter registration not found",
         )
 
-    voter_ref = voter_document.reference
-    election_ref = db.collection("elections").document(election_id)
-    ballot_ref = db.collection(BALLOTS_COLLECTION).document()
 
-    encryption = get_encryption_service()
+@router.post("/{election_id}/submit", status_code=status.HTTP_201_CREATED)
+async def submit_ballot(
+    election_id: str,
+    ballot: BallotSubmission,
+    current_user: dict[str, Any] = Depends(get_current_firebase_user),
+):
+    auth_uid = current_user["uid"]
+    db = firestore.client()
 
-    encrypted_house_preferences = encryption.encrypt(
-        repr(body.house.preferences)
-    )
-    encrypted_senate_above = encryption.encrypt(
-        repr(body.senate.aboveTheLine)
-    )
-    encrypted_senate_below = encryption.encrypt(
-        repr(body.senate.belowTheLine)
-    )
+    try:
+        transaction = db.transaction()
 
-    ballot_data = {
-        "electionId": election_id,
-        "housePreferences": (
-            encrypted_house_preferences.ciphertext
-            if encrypted_house_preferences
-            else None
-        ),
-        "senateAboveTheLine": (
-            encrypted_senate_above.ciphertext
-            if encrypted_senate_above
-            else None
-        ),
-        "senateBelowTheLine": (
-            encrypted_senate_below.ciphertext
-            if encrypted_senate_below
-            else None
-        ),
-        "encryption": {
-            "housePreferencesKeyId": (
-                encrypted_house_preferences.keyId
-                if encrypted_house_preferences
-                else None
-            ),
-            "senateAboveTheLineKeyId": (
-                encrypted_senate_above.keyId
-                if encrypted_senate_above
-                else None
-            ),
-            "senateBelowTheLineKeyId": (
-                encrypted_senate_below.keyId
-                if encrypted_senate_below
-                else None
-            ),
-        },
-        "submittedAt": firestore.SERVER_TIMESTAMP,
-    }
+        voter_snapshot = _get_voter(db, transaction, auth_uid)
 
-    audit_data = {
-        "action": "ballot_submitted",
-        "actor": {
-            "staffId": uid,
-            "role": "voter",
-        },
-        "target": {
-            "collection": BALLOTS_COLLECTION,
-            "documentId": ballot_ref.id,
-        },
-        "electionId": election_id,
-        "before": None,
-        "after": {
-            "voted": True,
-            "voting": False,
-        },
-        "timestamp": firestore.SERVER_TIMESTAMP,
-    }
-
-    @firestore.transactional
-    def submit_vote(transaction):
-        voter_snapshot = voter_ref.get(transaction=transaction)
-        election_snapshot = election_ref.get(transaction=transaction)
-
-        if not election_snapshot.exists:
+        if voter_snapshot is None or not voter_snapshot.exists:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Election not found",
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Voter profile not found",
             )
 
-        election_data = election_snapshot.to_dict() or {}
+        voter = voter_snapshot.to_dict() or {}
 
-        if election_data.get("phase") != "open":
+        if voter.get("activeElectionId") != election_id:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Voting is not currently open for this election",
+                detail="No active voting session for this election",
             )
 
-        if not voter_snapshot.exists:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Voter registration not found",
-            )
-
-        voter_data = voter_snapshot.to_dict() or {}
-
-        if voter_data.get("voted") is True:
+        if not voter.get("voting", False):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Voter has already voted in this election",
+                detail="Voting session is not active",
             )
 
-        voted_elections = voter_data.get("votedElections") or {}
-
-        if election_id in voted_elections:
+        if voter.get("voted", False):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Voter has already voted in this election",
+                detail="Voter has already submitted a ballot",
             )
 
-        if voter_data.get("voting") is not True:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="No active voting session",
-            )
+        _get_open_election(db, transaction, election_id)
 
-        if voter_data.get("activeElectionId") != election_id:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Active voting session is for a different election",
-            )
+        encryption_service = get_encryption_service()
 
-        updated_voted_elections = dict(voted_elections)
-        updated_voted_elections[election_id] = True
+        encrypted_house_preferences = encryption_service.encrypt(
+            json.dumps(ballot.house.preferences, separators=(",", ":"))
+        )
+        encrypted_senate_above_the_line = encryption_service.encrypt(
+            json.dumps(ballot.senate.aboveTheLine, separators=(",", ":"))
+        )
+        encrypted_senate_below_the_line = encryption_service.encrypt(
+            json.dumps(ballot.senate.belowTheLine, separators=(",", ":"))
+        )
 
-        transaction.set(ballot_ref, ballot_data)
+        ballot_ref = db.collection(BALLOTS_COLLECTION).document()
+        ballot_id = ballot_ref.id
+
+        transaction.set(
+            ballot_ref,
+            {
+                "ballotId": ballot_id,
+                "electionId": election_id,
+                "housePreferences": encrypted_house_preferences.ciphertext,
+                "senateAboveTheLine": encrypted_senate_above_the_line.ciphertext,
+                "senateBelowTheLine": encrypted_senate_below_the_line.ciphertext,
+                "keyId": encrypted_house_preferences.keyId,
+                "submittedAt": _utc_now(),
+            },
+        )
+
+        voter_ref = voter_snapshot.reference
+        voted_elections = voter.get("votedElections") or {}
+        voted_elections[election_id] = True
 
         transaction.update(
             voter_ref,
             {
-                "voting": False,
                 "voted": True,
-                "votedAt": firestore.SERVER_TIMESTAMP,
+                "voting": False,
                 "activeElectionId": None,
-                "votedElections": updated_voted_elections,
-                "updatedAt": firestore.SERVER_TIMESTAMP,
+                "votedElections": voted_elections,
             },
         )
 
-        transaction.set(
-            db.collection(AUDIT_COLLECTION).document(),
-            audit_data,
-        )
+        return {
+            "receipt": ballot_id,
+            "electionId": election_id,
+            "voted": True,
+        }
 
-    try:
-        submit_vote(db.transaction())
     except HTTPException:
         raise
-    except Exception as exc:
+    except Exception:
+        logging.exception("Unable to submit ballot")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unable to submit ballot",
-        ) from exc
-
-    return {
-        "ballotId": ballot_ref.id,
-        "electionId": election_id,
-        "voted": True,
-        "message": "Ballot submitted successfully",
-    }
+        )
