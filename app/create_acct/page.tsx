@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import {
   createUserWithEmailAndPassword,
   sendEmailVerification,
@@ -212,6 +212,20 @@ export default function CreateAccountPage() {
 
   const [isSubmitting, setIsSubmitting] =
     useState(false);
+
+  // Next.js keeps this page mounted but hidden after navigating away
+  // (cacheComponents), so clear the passwords and personal details
+  useLayoutEffect(() => {
+    return () => {
+      setForm(emptyForm);
+      setSelectedDay("");
+      setSelectedMonth("");
+      setSelectedYear("");
+      setFieldErrors({});
+      setError("");
+      setIsSubmitting(false);
+    };
+  }, []);
 
   const latestAllowedYear =
     new Date().getFullYear() - MIN_AGE;

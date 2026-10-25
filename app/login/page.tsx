@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import {
   getMultiFactorResolver,
   signInWithEmailAndPassword,
@@ -68,6 +68,17 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] =
     useState(false);
+
+  // Next.js keeps this page mounted but hidden after navigating away
+  // (cacheComponents), so never leave a typed password behind
+  useLayoutEffect(() => {
+    return () => {
+      setEmail("");
+      setPassword("");
+      setError("");
+      setIsSubmitting(false);
+    };
+  }, []);
 
   async function handleSubmit(
     event: React.FormEvent<HTMLFormElement>

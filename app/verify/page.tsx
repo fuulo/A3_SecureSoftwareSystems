@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   PhoneAuthProvider,
@@ -59,6 +59,23 @@ export default function AuthenticationCodePage() {
     const timer = setTimeout(() => setSecondsLeft((s) => s - 1), 1000);
     return () => clearTimeout(timer);
   }, [secondsLeft]);
+
+  // Next.js keeps this page mounted but hidden after navigating away
+  // (cacheComponents), so clear the code and start over on every visit
+  useLayoutEffect(() => {
+    return () => {
+      setStep("send");
+      setCode("");
+      setVerificationId("");
+      setMaskedPhone("");
+      setError("");
+      setMessage("");
+      setIsSending(false);
+      setIsSubmitting(false);
+      setIsVerified(false);
+      setSecondsLeft(0);
+    };
+  }, []);
 
   // Remove the reCAPTCHA when leaving the page
   useEffect(() => {

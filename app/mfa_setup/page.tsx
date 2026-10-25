@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   multiFactor,
@@ -12,7 +12,7 @@ import {
   type User,
 } from "firebase/auth";
 import { auth } from "@/lib/firebase";
-import { getDashboardPath } from "@/lib/dashboard.ts";
+import { getDashboardPath } from "@/lib/dashboard";
 import { getMfaErrorMessage, toE164AU } from "@/lib/mfa";
 import { buttonStyle, mainHeader } from "@/components/styles";
 
@@ -36,6 +36,21 @@ export default function MfaSetupPage() {
   const [isBusy, setIsBusy] = useState(false);
 
   const recaptchaRef = useRef<RecaptchaVerifier | null>(null);
+
+  // Next.js keeps this page mounted but hidden after navigating away
+  // (cacheComponents), so start over on every visit. The sign-in check
+  // below runs again when the page is shown and picks the right step.
+  useLayoutEffect(() => {
+    return () => {
+      setUser(null);
+      setStep("checking");
+      setPhone("");
+      setCode("");
+      setVerificationId("");
+      setError("");
+      setIsBusy(false);
+    };
+  }, []);
 
   // Check who is signed in, and whether they can set up a second step
   useEffect(() => {
