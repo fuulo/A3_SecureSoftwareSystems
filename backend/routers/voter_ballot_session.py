@@ -5,6 +5,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from firebase_admin import firestore
+from pydantic import StringConstraints
+from typing_extensions import Annotated
 
 from backend.auth import enforce_voter_ip_allowlist, verify_token
 from backend.models import BallotSubmission
@@ -18,6 +20,15 @@ BALLOTS_COLLECTION = "ballots"
 AUDIT_LOGS_COLLECTION = "auditLogs"
 
 SESSION_DURATION_MINUTES = 15
+
+ElectionId = Annotated[
+    str,
+    StringConstraints(
+        min_length=1,
+        max_length=120,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    ),
+]
 
 
 def get_encryption_service():
@@ -137,7 +148,7 @@ def _get_open_election(
 
 @router.post("/{election_id}/start", status_code=status.HTTP_200_OK)
 async def start_voting_session(
-    election_id: str,
+    election_id: ElectionId,
     request: Request,
     current_user: dict[str, Any] = Depends(get_current_firebase_user),
     _: None = Depends(enforce_voter_ip_allowlist),
@@ -183,7 +194,7 @@ async def start_voting_session(
 
 @router.post("/{election_id}/submit", status_code=status.HTTP_201_CREATED)
 async def submit_ballot(
-    election_id: str,
+    election_id: ElectionId,
     ballot: BallotSubmission,
     request: Request,
     current_user: dict[str, Any] = Depends(get_current_firebase_user),
