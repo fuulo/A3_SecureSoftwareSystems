@@ -4,14 +4,28 @@ import type { MultiFactorResolver } from "firebase/auth";
 // page to the verify page. It is an object, so it cannot go in sessionStorage.
 // It stays in memory only, so a page refresh clears it on purpose.
 let pendingResolver: MultiFactorResolver | null = null;
+let pendingSince: number | null = null;
+
+// The whole second step has to be finished within this time, counted from
+// the moment the password was accepted
+export const MFA_TIME_LIMIT_SECONDS = 60;
 
 export function setPendingMfa(resolver: MultiFactorResolver | null) {
   pendingResolver = resolver;
+  pendingSince = resolver ? Date.now() : null;
 }
 
 export function getPendingMfa(): MultiFactorResolver | null {
   return pendingResolver;
 }
+
+// When the pending login expires (in milliseconds), or null if there is none
+export function getPendingMfaDeadline(): number | null {
+  return pendingSince === null ? null : pendingSince + MFA_TIME_LIMIT_SECONDS * 1000;
+}
+
+// Added to the login page URL (?reason=...) when the time limit ran out
+export const MFA_TIMEOUT_REASON = "mfa-timeout";
 
 // Turns 0412 345 678 or +61 412 345 678 into +61412345678.
 // Returns null if the number is not a valid Australian number.

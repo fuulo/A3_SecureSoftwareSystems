@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   PhoneAuthProvider,
   PhoneMultiFactorGenerator,
   RecaptchaVerifier,
+  signOut,
   type PhoneMultiFactorInfo,
 } from "firebase/auth";
 import { auth } from "@/lib/firebase";
@@ -14,12 +15,16 @@ import { getDashboardPath } from "@/lib/dashboard";
 import {
   getMfaErrorMessage,
   getPendingMfa,
+  getPendingMfaDeadline,
+  MFA_TIME_LIMIT_SECONDS,
+  MFA_TIMEOUT_REASON,
   setPendingMfa,
 } from "@/lib/mfa";
 import { mainHeader, buttonStyle } from "@/components/styles";
 
 const CODE_LENGTH = 6;
-const RESEND_SECONDS = 60;
+// Shorter than the time limit, so a new code can still be requested in time
+const RESEND_SECONDS = 30;
 
 const inputStyle =
   "w-full rounded border border-slate-400 px-3 py-2 text-center text-[28px] font-semibold tracking-[0.4em] focus:outline-none focus:ring-2 focus:ring-[#1f538d]";
@@ -41,8 +46,16 @@ export default function AuthenticationCodePage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isVerified, setIsVerified] = useState(false);
   const [secondsLeft, setSecondsLeft] = useState(0);
+  const [secondsToExpiry, setSecondsToExpiry] = useState(MFA_TIME_LIMIT_SECONDS);
 
   const recaptchaRef = useRef<RecaptchaVerifier | null>(null);
+
+  // Ends the login attempt when the time limit has passed
+  const expireLogin = useCallback(() => {
+    setPendingMfa(null);
+    signOut(auth).catch(() => {});
+    router.replace(`/login?reason=${MFA_TIMEOUT_REASON}`);
+  }, [router]);
 
   // If no first-step login is waiting (for example after a refresh),
   // go back to the login page
@@ -51,6 +64,24 @@ export default function AuthenticationCodePage() {
       router.replace("/login");
     }
   }, [router]);
+
+  // Count down to the time limit. A code that is being checked, or has been
+  // accepted, is allowed to finish.
+  useEffect(() => {
+    const deadline = getPendingMfaDeadline();
+    if (deadline === null || isSubmitting || isVerified) return;
+
+    const timer = setInterval(() => {
+      const remaining = Math.ceil((deadline - Date.now()) / 1000);
+      if (remaining <= 0) {
+        clearInterval(timer);
+        expireLogin();
+      } else {
+        setSecondsToExpiry(remaining);
+      }
+    }, 250);
+    return () => clearInterval(timer);
+  }, [isSubmitting, isVerified, expireLogin]);
 
   // Count down for the "Send a new code" button
   useEffect(() => {
@@ -74,6 +105,7 @@ export default function AuthenticationCodePage() {
       setIsSubmitting(false);
       setIsVerified(false);
       setSecondsLeft(0);
+      setSecondsToExpiry(MFA_TIME_LIMIT_SECONDS);
     };
   }, []);
 
@@ -162,6 +194,12 @@ export default function AuthenticationCodePage() {
         return;
       }
 
+      const deadline = getPendingMfaDeadline();
+      if (deadline === null || Date.now() >= deadline) {
+        expireLogin();
+        return;
+      }
+
       if (code.length !== CODE_LENGTH) {
         setError(`Please enter the ${CODE_LENGTH}-digit authentication code.`);
         return;
@@ -222,6 +260,17 @@ export default function AuthenticationCodePage() {
         <h1 className={`${mainHeader} mb-2 text-center`}>
           Authentication Code
         </h1>
+
+        {!isVerified && (
+          <p role="timer" className="mb-4 text-center text-[13px] text-slate-600">
+            Time remaining:{" "}
+            <span
+              className={`font-semibold ${secondsToExpiry <= 10 ? "text-red-700" : "text-slate-800"}`}
+            >
+              {secondsToExpiry}s
+            </span>
+          </p>
+        )}
 
         {step === "send" && (
           <>

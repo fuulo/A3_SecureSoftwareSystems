@@ -7,13 +7,13 @@ import {
   signInWithEmailAndPassword,
   type MultiFactorError,
 } from "firebase/auth";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { auth } from "@/lib/firebase";
 import {
   mainHeader,
   buttonStyle,
 } from "@/components/styles";
-import { setPendingMfa } from "@/lib/mfa";
+import { MFA_TIMEOUT_REASON, setPendingMfa } from "@/lib/mfa";
 
 const inputStyle =
   "w-full rounded border border-slate-400 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#1f538d]";
@@ -68,6 +68,13 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] =
     useState(false);
+
+  // Why the user was sent back here, if the verify page said so
+  const searchParams = useSearchParams();
+  const notice =
+    searchParams.get("reason") === MFA_TIMEOUT_REASON
+      ? "Your verification timed out. Please log in again."
+      : "";
 
   // Next.js keeps this page mounted but hidden after navigating away
   // (cacheComponents), so never leave a typed password behind
@@ -137,6 +144,15 @@ export default function LoginPage() {
         <p className="mb-8 text-center text-slate-600">
           Enter your email address and password.
         </p>
+
+        {notice && (
+          <p
+            role="status"
+            className="mb-5 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-[13px] text-amber-800"
+          >
+            {notice}
+          </p>
+        )}
 
         <form
           onSubmit={handleSubmit}
