@@ -3,10 +3,10 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from firebase_admin import firestore
 
-from backend.auth import verify_token
+from backend.auth import enforce_voter_ip_allowlist, verify_token
 from backend.models import BallotSubmission
 from backend.security.encryption import EncryptedValue
 
@@ -63,7 +63,10 @@ def _get_voter(
     return None
 
 
-def _validate_voter(voter_snapshot, election_id: str) -> dict[str, Any]:
+def _validate_voter(
+    voter_snapshot,
+    election_id: str,
+) -> dict[str, Any]:
     if voter_snapshot is None or not voter_snapshot.exists:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -135,7 +138,9 @@ def _get_open_election(
 @router.post("/{election_id}/start", status_code=status.HTTP_200_OK)
 async def start_voting_session(
     election_id: str,
+    request: Request,
     current_user: dict[str, Any] = Depends(get_current_firebase_user),
+    _: None = Depends(enforce_voter_ip_allowlist),
 ):
     auth_uid = current_user["uid"]
     db = firestore.client()
@@ -180,7 +185,9 @@ async def start_voting_session(
 async def submit_ballot(
     election_id: str,
     ballot: BallotSubmission,
+    request: Request,
     current_user: dict[str, Any] = Depends(get_current_firebase_user),
+    _: None = Depends(enforce_voter_ip_allowlist),
 ):
     auth_uid = current_user["uid"]
     db = firestore.client()

@@ -1,6 +1,7 @@
 from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
 
+from backend.auth import enforce_voter_ip_allowlist
 from backend.main import app
 from backend.routers import voter_ballot_session
 from backend.routers.voter_ballot_session import get_current_firebase_user
@@ -35,7 +36,12 @@ class FakeDocumentSnapshot:
 
 
 class FakeDocumentReference:
-    def __init__(self, document_id: str, data: dict | None = None, exists: bool = True):
+    def __init__(
+        self,
+        document_id: str,
+        data: dict | None = None,
+        exists: bool = True,
+    ):
         self.id = document_id
         self.data = data or {}
         self.exists = exists
@@ -110,6 +116,7 @@ class FakeFirestore:
         )
         self.ballots = FakeCollection()
         self.audit_logs = FakeCollection()
+        self.security_alerts = FakeCollection()
 
     def collection(self, name):
         if name == "voters":
@@ -123,6 +130,9 @@ class FakeFirestore:
 
         if name == "auditLogs":
             return self.audit_logs
+
+        if name == "securityAlerts":
+            return self.security_alerts
 
         return FakeCollection()
 
@@ -175,6 +185,7 @@ def configure_voter(voter, election=None):
         "uid": "uid_1",
         "email": "voter@example.com",
     }
+    app.dependency_overrides[enforce_voter_ip_allowlist] = lambda: None
 
     return fake_db
 
@@ -187,6 +198,13 @@ def use_unauthenticated_client():
         )
 
     app.dependency_overrides[get_current_firebase_user] = raise_unauthorised
+    app.dependency_overrides[enforce_voter_ip_allowlist] = lambda: None
+
+
+def use_unapproved_voter_ip():
+    app.dependency_overrides[enforce_voter_ip_allowlist] = (
+        enforce_voter_ip_allowlist
+    )
 
 
 def test_start_voting_session_succeeds_for_eligible_voter():
@@ -254,6 +272,18 @@ def test_start_voting_session_rejects_active_session():
     assert response.status_code == 409
 
 
+def test_start_voting_session_blocks_unapproved_voter_ip():
+    voter = approved_voter()
+    configure_voter(voter)
+    use_unapproved_voter_ip()
+
+    response = TestClient(app).post(START_URL)
+
+    assert response.status_code == 403
+    assert voter.data["voting"] is False
+    assert voter.data["activeElectionId"] is None
+
+
 def test_submit_ballot_succeeds_and_marks_voter_voted():
     voter = approved_voter(
         voting=True,
@@ -277,6 +307,8 @@ def test_submit_ballot_succeeds_and_marks_voter_voted():
     stored_ballots = list(fake_db.ballots.documents.values())
     assert len(stored_ballots) == 1
     assert stored_ballots[0].data["housePreferences"].startswith("encrypted::")
+    assert stored_ballots[0].data["senateAboveTheLine"].startswith("encrypted::")
+    assert stored_ballots[0].data["senateBelowTheLine"].startswith("encrypted::")
 
 
 def test_submit_ballot_requires_authentication():
@@ -338,4 +370,21 @@ def test_submit_ballot_rejects_closed_election():
     )
 
     assert response.status_code == 409
+    assert voter.data["voted"] is False
+
+
+def test_submit_ballot_blocks_unapproved_voter_ip():
+    voter = approved_voter(
+        voting=True,
+        activeElectionId=ELECTION_ID,
+    )
+    configure_voter(voter)
+    use_unapproved_voter_ip()
+
+    response = TestClient(app).post(
+        SUBMIT_URL,
+        json=VALID_BALLOT,
+    )
+
+    assert response.status_code == 403
     assert voter.data["voted"] is False
