@@ -42,6 +42,14 @@ class FakeDocument:
         self._db.check_read(transaction)
         return FakeSnapshot(self, self._db.store.get(self.path))
 
+    def set(self, data: dict[str, Any]) -> None:
+        self._db.store[self.path] = copy.deepcopy(data)
+
+    def update(self, data: dict[str, Any]) -> None:
+        if self.path not in self._db.store:
+            raise NotFound(self.path)
+        self._db.store[self.path] = {**self._db.store[self.path], **copy.deepcopy(data)}
+
     def collection(self, name: str) -> "FakeCollection":
         return FakeCollection(self._db, f"{self.path}/{name}")
 
@@ -167,6 +175,9 @@ class FakeAuth:
     class EmailAlreadyExistsError(Exception):
         pass
 
+    class UserNotFoundError(Exception):
+        pass
+
     def __init__(self) -> None:
         self.users: dict[str, dict[str, Any]] = {}
         self.revoked: list[str] = []
@@ -178,7 +189,15 @@ class FakeAuth:
         self.users[uid] = {"email": email, "password": password, "disabled": disabled}
         return SimpleNamespace(uid=uid)
 
+    def get_user_by_email(self, email: str) -> SimpleNamespace:
+        for uid, user in self.users.items():
+            if user["email"] == email:
+                return SimpleNamespace(uid=uid, disabled=user.get("disabled", False))
+        raise self.UserNotFoundError(email)
+
     def update_user(self, uid: str, **changes: Any) -> None:
+        if uid not in self.users:
+            raise self.UserNotFoundError(uid)
         self.users[uid].update(changes)
 
     def delete_user(self, uid: str) -> None:

@@ -14,6 +14,21 @@ import {
   buttonStyle,
 } from "@/components/styles";
 import { LOGIN_NOTICES, setPendingMfa } from "@/lib/mfa";
+import {
+  checkLockout,
+  failedSignInMessage,
+  lockedMessage,
+  lockoutCheckErrorMessage,
+  reportSuccessfulSignIn,
+  type LockoutStatus,
+} from "@/lib/lockout";
+
+// Wrong email or password: these count towards locking the account
+const WRONG_CREDENTIAL_CODES = new Set([
+  "auth/invalid-credential",
+  "auth/user-not-found",
+  "auth/wrong-password",
+]);
 
 const inputStyle =
   "w-full rounded border border-slate-400 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#1f538d]";
@@ -51,7 +66,7 @@ function getLoginErrorMessage(
     }
 
     if (code === "auth/user-disabled") {
-      return "This account has been disabled.";
+      return "This account is locked or disabled. Please try again later.";
     }
   }
 
@@ -102,21 +117,35 @@ export default function LoginPage() {
     setIsSubmitting(true);
 
     try {
+      // Refuse a locked account before contacting Firebase
+      let lockout: LockoutStatus;
+      try {
+        lockout = await checkLockout(cleanEmail);
+      } catch (lockoutError) {
+        setError(lockoutCheckErrorMessage(lockoutError));
+        return;
+      }
+      if (lockout.locked) {
+        setError(lockedMessage(lockout.retryAfterSeconds));
+        return;
+      }
+
       await signInWithEmailAndPassword(auth, cleanEmail, password);
 
       // The password was enough, so this account has no phone set up yet
+      await reportSuccessfulSignIn();
       setEmail("");
       setPassword("");
       router.replace("/mfa_setup");
     } catch (firebaseError) {
+      const code = (firebaseError as { code?: string }).code ?? "";
+
       // This is expected for accounts with a phone set up:
       // Firebase asks for the second step
-      if (
-        (firebaseError as { code?: string }).code ===
-        "auth/multi-factor-auth-required"
-      ) {
+      if (code === "auth/multi-factor-auth-required") {
         setPendingMfa(
-          getMultiFactorResolver(auth, firebaseError as MultiFactorError)
+          getMultiFactorResolver(auth, firebaseError as MultiFactorError),
+          cleanEmail
         );
         setEmail("");
         setPassword("");
@@ -126,7 +155,12 @@ export default function LoginPage() {
       }
 
       console.error(firebaseError);
-      setError(getLoginErrorMessage(firebaseError));
+      const message = getLoginErrorMessage(firebaseError);
+      setError(
+        WRONG_CREDENTIAL_CODES.has(code)
+          ? await failedSignInMessage(cleanEmail, message)
+          : message
+      );
     } finally {
       setIsSubmitting(false);
     }

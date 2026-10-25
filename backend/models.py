@@ -145,3 +145,7 @@ class BallotSubmission(StrictModel):
 
 class ReceiptCheck(StrictModel):
     receipt: Annotated[str, Field(min_length=1, max_length=40)]
+
+
+class LockoutReport(StrictModel):
+    email: Annotated[str, Field(min_length=3, max_length=254, pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")]

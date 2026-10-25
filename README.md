@@ -288,6 +288,42 @@ Staff API protection additionally uses Firebase ID-token verification, the
 server-side staff record and role, recent authentication, and the IP
 allowlist.
 
+## Account lockout
+
+Voter and staff accounts are locked after **3 consecutive failed sign-in
+attempts**: a wrong password on `/login` or a wrong SMS code on `/verify`.
+
+| Consecutive failures | Lock |
+| --- | --- |
+| 3 | 5 minutes |
+| 6 | 10 minutes |
+| 9 | 20 minutes |
+| 12 | 40 minutes |
+| 15 and every 3 after | 60 minutes (maximum) |
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/auth/lockout/check` | Before signing in: is this email locked, and for how long |
+| `POST /api/auth/lockout/failure` | Report a wrong password or SMS code; locks on every 3rd |
+| `POST /api/auth/lockout/success` | Reset the count; needs the new sign-in's Firebase ID token |
+
+- **Enforcement:** a lock disables the Firebase account, so Firebase refuses the
+  sign-in even if the login page is bypassed. The account is re-enabled by the
+  first check or report after the lock ends. Accounts that were already
+  disabled (for example staff awaiting approval, or staff deactivated during the
+  lock) stay disabled.
+- **IP-based rate limiting:** `check` allows 30 requests per minute per IP
+  address, `failure` and `success` 10. Over the limit, the login page asks the
+  user to wait a minute.
+- **No account discovery:** responses are the same whether or not an account
+  exists for the email. Lock records are keyed by a hash of the email (see
+  [firestore-schema.md](./firestore-schema.md#authlockoutsemailhash)).
+- **Audit:** every lock is written to the audit log as `auth.lockout`.
+- **Limitation:** failures are reported by the login and verify pages, because
+  sign-in itself happens between the browser and Firebase. Attempts made
+  directly against Firebase, bypassing these pages, are not counted; Firebase's
+  own throttling (`auth/too-many-requests`) still applies to them.
+
 ## Data and security notes
 
 Firestore structure is documented in [firestore-schema.md](./firestore-schema.md).

@@ -18,6 +18,7 @@ from backend.routers import (
     admin_ip,
     admin_results,
     admin_staff,
+    auth_lockout,
     employee_candidates,
     employee_voters,
     public_results,
@@ -44,6 +45,7 @@ app.include_router(employee_candidates.router)
 app.include_router(admin_results.router)
 app.include_router(voter_ballots.router)
 app.include_router(public_results.router)
+app.include_router(auth_lockout.router)
 
 
 def _record_request_failure(request: Request, *, outcome: str, reason: str) -> None:

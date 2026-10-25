@@ -33,6 +33,9 @@ ALLOWED_CIPHERS = frozenset({
 # Every TLS connection opens with a handshake record (content type 22)
 TLS_HANDSHAKE_RECORD = 0x16
 CLIENT_HELLO_TIMEOUT_SECONDS = 10
+# How long closing a connection waits for the client to confirm; asyncio's
+# default of 30 seconds holds up every shutdown and --reload restart
+TLS_SHUTDOWN_TIMEOUT_SECONDS = 5
 
 
 class SecurityLog:
@@ -172,6 +175,7 @@ class TlsListener:
                 sock=conn,
                 ssl=self._ssl_context,
                 ssl_handshake_timeout=CLIENT_HELLO_TIMEOUT_SECONDS,
+                ssl_shutdown_timeout=TLS_SHUTDOWN_TIMEOUT_SECONDS,
             )
         except asyncio.CancelledError:
             conn.close()

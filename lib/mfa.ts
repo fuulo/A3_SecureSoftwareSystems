@@ -6,18 +6,25 @@ import { auth } from "@/lib/firebase";
 // It stays in memory only, so a page refresh clears it on purpose.
 let pendingResolver: MultiFactorResolver | null = null;
 let pendingSince: number | null = null;
+let pendingEmail = "";
 
 // The whole second step has to be finished within this time, counted from
 // the moment the password was accepted
 export const MFA_TIME_LIMIT_SECONDS = 60;
 
-export function setPendingMfa(resolver: MultiFactorResolver | null) {
+// The email is kept so wrong codes can be counted against the account
+export function setPendingMfa(resolver: MultiFactorResolver | null, email = "") {
   pendingResolver = resolver;
   pendingSince = resolver ? Date.now() : null;
+  pendingEmail = resolver ? email : "";
 }
 
 export function getPendingMfa(): MultiFactorResolver | null {
   return pendingResolver;
+}
+
+export function getPendingMfaEmail(): string {
+  return pendingEmail;
 }
 
 // When the pending login expires (in milliseconds), or null if there is none
@@ -28,11 +35,13 @@ export function getPendingMfaDeadline(): number | null {
 // Added to the login page URL (?reason=...) to say why the user was sent back
 export const MFA_TIMEOUT_REASON = "mfa-timeout";
 export const MFA_REQUIRED_REASON = "mfa-required";
+export const ACCOUNT_LOCKED_REASON = "account-locked";
 
 // A Map, so a crafted ?reason= cannot pick up built-in object properties
 export const LOGIN_NOTICES = new Map<string, string>([
   [MFA_TIMEOUT_REASON, "Your verification timed out. Please log in again."],
   [MFA_REQUIRED_REASON, "Please log in and complete text message verification to continue."],
+  [ACCOUNT_LOCKED_REASON, "Too many failed attempts. This account is temporarily locked."],
 ]);
 
 // Voter pages need a sign-in that included the text message code. Firebase
@@ -91,6 +100,8 @@ export function getMfaErrorMessage(error: unknown): string {
       return "This phone number is already set up for this account.";
     case "auth/captcha-check-failed":
       return "The security check failed. Please try again.";
+    case "auth/user-disabled":
+      return "This account is locked or disabled. Please try again later.";
     case "auth/network-request-failed":
       return "Network error. Please check your connection and try again.";
     case "auth/operation-not-allowed":

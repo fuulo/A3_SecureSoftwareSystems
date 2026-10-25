@@ -13,13 +13,16 @@ import { auth } from "@/lib/firebase";
 import { ApiError } from "@/lib/api";
 import { getDashboardPath } from "@/lib/dashboard";
 import {
+  ACCOUNT_LOCKED_REASON,
   getMfaErrorMessage,
   getPendingMfa,
   getPendingMfaDeadline,
+  getPendingMfaEmail,
   MFA_TIME_LIMIT_SECONDS,
   MFA_TIMEOUT_REASON,
   setPendingMfa,
 } from "@/lib/mfa";
+import { attemptsLeftMessage, reportFailedSignIn, reportSuccessfulSignIn } from "@/lib/lockout";
 import { mainHeader, buttonStyle } from "@/components/styles";
 
 const CODE_LENGTH = 6;
@@ -214,11 +217,32 @@ export default function AuthenticationCodePage() {
         // Firebase completes the sign-in only now, after the second step
         await resolver.resolveSignIn(assertion);
       } catch (firebaseError) {
-        setError(getMfaErrorMessage(firebaseError));
+        const failure = getMfaErrorMessage(firebaseError);
+
+        // A wrong code counts towards locking the account
+        if ((firebaseError as { code?: string }).code === "auth/invalid-verification-code") {
+          try {
+            const lockout = await reportFailedSignIn(getPendingMfaEmail());
+            if (lockout.locked) {
+              setPendingMfa(null);
+              signOut(auth).catch(() => {});
+              router.replace(`/login?reason=${ACCOUNT_LOCKED_REASON}`);
+              return;
+            }
+            setError(`${failure} ${attemptsLeftMessage(lockout)}`);
+          } catch (reportError) {
+            console.error("Unable to report the failed sign-in", reportError);
+            setError(failure);
+          }
+        } else {
+          setError(failure);
+        }
         setIsSubmitting(false);
         return;
       }
 
+      // Both factors passed, so the failed attempt count starts again
+      await reportSuccessfulSignIn();
       setPendingMfa(null);
       setIsVerified(true);
 

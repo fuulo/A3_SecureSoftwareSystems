@@ -36,6 +36,7 @@
         /rounds/{roundNumber}
 /receipts/{receiptHash}                ← ballot receipts (hash only)
 /publishedResults/{electionId}         ← frozen public result package
+/authLockouts/{emailHash}              ← failed sign-in counts and account locks
 /auditLogs/{logId}
 ```
 
@@ -463,6 +464,24 @@ records them in its `election.phaseChange` entry.
 | `transfer` | Votes moved from an elected or excluded candidate to the next preferences       |
 
 ---
+
+## Account Lockouts
+
+### `authLockouts/{emailHash}`
+
+Written only by the API (`backend/routers/auth_lockout.py`); clients have no
+access. The document ID is the SHA-256 of the lower-cased email, so the
+collection is not a list of addresses. Records exist for any email that had a
+failed sign-in, registered or not, so responses reveal nothing about accounts.
+
+```jsonc
+{
+  "failures": 4,                  // consecutive failed passwords or SMS codes; reset by a real sign-in
+  "lastFailureAt": "timestamp",
+  "lockedUntil": "timestamp",     // set on every 3rd failure: 5 min, then doubling, up to 60 min
+  "disabledUid": "firebaseUid"    // the Firebase account this lock disabled; null once re-enabled
+}
+```
 
 ## Receipts and Published Results
 
