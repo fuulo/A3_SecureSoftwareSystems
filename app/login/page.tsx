@@ -13,7 +13,7 @@ import {
   mainHeader,
   buttonStyle,
 } from "@/components/styles";
-import { MFA_TIMEOUT_REASON, setPendingMfa } from "@/lib/mfa";
+import { LOGIN_NOTICES, setPendingMfa } from "@/lib/mfa";
 
 const inputStyle =
   "w-full rounded border border-slate-400 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#1f538d]";
@@ -72,9 +72,7 @@ export default function LoginPage() {
   // Why the user was sent back here, if the verify page said so
   const searchParams = useSearchParams();
   const notice =
-    searchParams.get("reason") === MFA_TIMEOUT_REASON
-      ? "Your verification timed out. Please log in again."
-      : "";
+    LOGIN_NOTICES.get(searchParams.get("reason") ?? "") ?? "";
 
   // Next.js keeps this page mounted but hidden after navigating away
   // (cacheComponents), so never leave a typed password behind

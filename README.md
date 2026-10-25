@@ -261,13 +261,32 @@ Operational consequences to plan for:
   password is ever stored in Firestore. Rejecting a request deletes that sign-in account.
 - Deploy the two new composite indexes in [firestore.indexes.json](./firestore.indexes.json).
 
-## Authentication-code demo warning
+## Two-factor authentication
 
-The six-digit authentication code in `/verify` is a demo placeholder: any six
-digits are accepted. It does **not** provide real second-factor security and
-must not be used to protect a production account. Staff API protection instead
-uses Firebase ID-token verification, the server-side staff record and role,
-recent authentication, and the IP allowlist.
+Voters sign in with two factors: their **password** and a **one-time code sent
+by SMS** (Firebase phone multi-factor authentication).
+
+| Step | Page | What happens |
+| --- | --- | --- |
+| Enrol | `/mfa_setup` | After verifying their email, the voter adds a phone number and confirms it with a code, then logs in again |
+| Sign in | `/login` → `/verify` | The password is checked first; Firebase completes the sign-in only after the SMS code is accepted |
+| Time limit | `/verify` | The code must be entered within **60 seconds** of the password being accepted. A countdown is shown; when it reaches zero the pending login is discarded, the user is signed out and returned to `/login?reason=mfa-timeout` |
+| Voter pages | `/voter/*` | Each page checks that the Firebase ID token records a completed second factor (`sign_in_second_factor`). A session without one is signed out and sent to `/login?reason=mfa-required`. `/voter/help` holds no personal data and is open to all |
+
+The 60-second limit and the voter-page checks run in the browser; Firebase
+handles the code check itself. The API accepts ID tokens with up to 10 seconds
+of clock skew, so a server clock slightly behind Google's does not reject a
+token issued moments earlier.
+
+Firebase setup: SMS multi-factor authentication requires Firebase
+Authentication with Identity Platform, with SMS multi-factor enabled under
+Authentication → Sign-in method. For demos, add **test phone numbers** there:
+they never send an SMS and always accept their fixed code. Real numbers
+receive real messages, which need the Blaze plan and are charged per SMS.
+
+Staff API protection additionally uses Firebase ID-token verification, the
+server-side staff record and role, recent authentication, and the IP
+allowlist.
 
 ## Data and security notes
 

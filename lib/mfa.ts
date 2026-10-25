@@ -1,4 +1,5 @@
-import type { MultiFactorResolver } from "firebase/auth";
+import { signOut, type MultiFactorResolver, type User } from "firebase/auth";
+import { auth } from "@/lib/firebase";
 
 // The first-step sign-in result (the "resolver") has to travel from the login
 // page to the verify page. It is an object, so it cannot go in sessionStorage.
@@ -24,8 +25,27 @@ export function getPendingMfaDeadline(): number | null {
   return pendingSince === null ? null : pendingSince + MFA_TIME_LIMIT_SECONDS * 1000;
 }
 
-// Added to the login page URL (?reason=...) when the time limit ran out
+// Added to the login page URL (?reason=...) to say why the user was sent back
 export const MFA_TIMEOUT_REASON = "mfa-timeout";
+export const MFA_REQUIRED_REASON = "mfa-required";
+
+// A Map, so a crafted ?reason= cannot pick up built-in object properties
+export const LOGIN_NOTICES = new Map<string, string>([
+  [MFA_TIMEOUT_REASON, "Your verification timed out. Please log in again."],
+  [MFA_REQUIRED_REASON, "Please log in and complete text message verification to continue."],
+]);
+
+// Voter pages need a sign-in that included the text message code. Firebase
+// records this in the signed ID token, so unlike a sessionStorage flag it
+// cannot be set by hand. Signs out a session that skipped the second step.
+// Returns true if the user may stay on the page.
+export async function requireSecondFactor(user: User): Promise<boolean> {
+  const token = await user.getIdTokenResult();
+  if (token.signInSecondFactor) return true;
+
+  await signOut(auth).catch(() => {});
+  return false;
+}
 
 // Turns 0412 345 678 or +61 412 345 678 into +61412345678.
 // Returns null if the number is not a valid Australian number.

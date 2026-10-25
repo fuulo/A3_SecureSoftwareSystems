@@ -15,6 +15,10 @@ import {
 } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 import {
+  MFA_REQUIRED_REASON,
+  requireSecondFactor,
+} from "@/lib/mfa";
+import {
   buttonStyle,
   mainHeader,
 } from "@/components/styles";
@@ -76,6 +80,12 @@ export default function VoterBallotPage() {
       async (currentUser) => {
         if (!currentUser) {
           router.replace("/login");
+          return;
+        }
+
+        // Both factors (password and text message code) are required
+        if (!(await requireSecondFactor(currentUser))) {
+          router.replace(`/login?reason=${MFA_REQUIRED_REASON}`);
           return;
         }
 
