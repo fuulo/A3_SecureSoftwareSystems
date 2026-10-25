@@ -17,9 +17,10 @@ from google.cloud import firestore
 
 from backend.audit import write_audit
 from backend.firestore_client import db
+from backend.reconciliation import require_reconciled
 
 logger = logging.getLogger(__name__)
-PACKAGE_VERSION = 2
+PACKAGE_VERSION = 3
 INDEPENDENT = "Independent"
 
 Docs = dict[str, dict[str, Any]]
@@ -127,8 +128,8 @@ def tally_senate(regions: Docs, groups: Docs, candidates: Docs, parties: Docs,
 
 
 def build_package(election_id: str, election: dict[str, Any], contests: list[dict[str, Any]], *,
-                  enrolled: int, ballots_cast: int, receipts_issued: int,
-                  published_at: datetime) -> dict[str, Any]:
+                  enrolled: int, ballots_cast: int, senate_ballots_cast: int, voters_marked_voted: int,
+                  receipts_issued: int, published_at: datetime) -> dict[str, Any]:
     try:
         local = ZoneInfo(election.get("timezone") or "Australia/Melbourne")
     except Exception:
@@ -141,7 +142,10 @@ def build_package(election_id: str, election: dict[str, Any], contests: list[dic
             "status": "Final",
             "publishedAt": published_at.astimezone(local).isoformat(timespec="seconds"),
             "enrolledVoters": enrolled,
+            # ballotsCast is the House ballot count, as in version 2 packages.
             "ballotsCast": ballots_cast,
+            "senateBallotsCast": senate_ballots_cast,
+            "votersMarkedVoted": voters_marked_voted,
             "receiptsIssued": receipts_issued,
         },
         "contests": contests,
@@ -172,6 +176,8 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
         raise HTTPException(status_code=409, detail="Results can only be published once the election is finalised")
     if published_ref.get().exists:
         raise HTTPException(status_code=409, detail="Results for this election have already been published")
+    # Checked again here: finalisation required it, so a mismatch now means records changed since.
+    reconciliation = require_reconciled(election_id, actor, request)
 
     # Ballots cannot change once an election is finalised, so they are read outside the transaction.
     candidates = _docs(election_ref.collection("candidates"))
@@ -188,7 +194,9 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
         election_id, election, contests,
         enrolled=_count(db.collection("voters").where("enrolmentStatus", "==", "enrolled")),
         ballots_cast=len(house_ballots),
-        receipts_issued=_count(db.collection("receipts").where("electionId", "==", election_id)),
+        senate_ballots_cast=len(senate_ballots),
+        voters_marked_voted=reconciliation["votersMarkedVoted"],
+        receipts_issued=reconciliation["receiptsIssued"],
         published_at=published_at,
     )
     content = package_bytes(package)

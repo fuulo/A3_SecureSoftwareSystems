@@ -11,6 +11,7 @@ from backend.firestore_client import db
 from backend.models import BallotSubmission
 from backend.rate_limit import limiter
 from backend.receipts import issue_receipt
+from backend.reconciliation import has_voted, voted_field
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/voter", tags=["voter-ballots"])
@@ -114,7 +115,9 @@ def record_ballot(voter_id: str, body: BallotSubmission, request: Request) -> di
     """Record one voter's House and Senate ballots and return their receipt.
 
     Ballots are stored without any voter reference or timestamp, and the voter
-    record only gains ``voted: true``, so a ballot cannot be traced to a voter.
+    record only gains ``voted: true`` and the election it voted in, so a ballot
+    cannot be traced to a voter. The election is recorded so that voters marked
+    voted can be reconciled against its ballots (see ``backend.reconciliation``).
     """
     voter_ref = db.collection("voters").document(voter_id)
     transaction = db.transaction()
@@ -124,14 +127,14 @@ def record_ballot(voter_id: str, body: BallotSubmission, request: Request) -> di
         voter = voter_ref.get(transaction=tx).to_dict() or {}
         if voter.get("enrolmentStatus") != "enrolled":
             raise BallotRejected(403, "Only enrolled voters can vote", "not_enrolled")
-        if voter.get("voted") is True:
-            raise BallotRejected(409, "A ballot has already been recorded for you", "double_vote_attempt")
         election_ref = _open_election(tx)
+        if has_voted(voter, election_ref.id):
+            raise BallotRejected(409, "A ballot has already been recorded for you", "double_vote_attempt")
         house = _house_ballot(tx, election_ref, voter, body.house.preferences)
         senate = _senate_ballot(tx, election_ref, voter, body.senate.aboveTheLine, body.senate.belowTheLine)
         tx.create(election_ref.collection("houseBallots").document(), house)
         tx.create(election_ref.collection("senateBallots").document(), senate)
-        tx.update(voter_ref, {"voted": True})
+        tx.update(voter_ref, {"voted": True, voted_field(election_ref.id): True})
         return issue_receipt(tx, election_ref.id)
 
     try:

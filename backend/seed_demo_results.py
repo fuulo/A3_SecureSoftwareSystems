@@ -23,6 +23,7 @@ from starlette.requests import Request
 from backend.election_defaults import DIVISIONS, PARTIES, SENATE_GROUPS, write_default_structure
 from backend.firestore_client import db
 from backend.models import BallotSubmission
+from backend.reconciliation import describe, reconcile_votes
 from backend.results import publish_results
 from backend.routers.voter_ballots import record_ballot
 
@@ -169,10 +170,17 @@ def main() -> int:
     for voter_id in voter_ids:
         receipts.append(record_ballot(voter_id, random_ballot(rng, election_id, voter_id), _request())["receipt"])
     db.collection("elections").document(election_id).update({"closedAt": firestore.SERVER_TIMESTAMP})
+    # The same check the API runs before finalisation (R-05).
+    reconciliation = reconcile_votes(election_id)
+    if not reconciliation["reconciled"]:
+        print(f"Votes do not reconcile: {'; '.join(describe(reconciliation))}. "
+              f"Election {election_id} was not finalised.", file=sys.stderr)
+        return 1
     set_status(election_id, "finalised")
 
     print(f"Election: {election_id}")
     print(f"Ballots cast: {len(receipts)}")
+    print(f"Reconciled: {'; '.join(describe(reconciliation))}")
     print("Sample receipts (each voter normally only sees their own):")
     for code in receipts[:5]:
         print(f"  {code}")

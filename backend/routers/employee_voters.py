@@ -20,6 +20,7 @@ from backend.models import (
     VoterRegistration,
 )
 from backend.rate_limit import limiter
+from backend.reconciliation import has_voted
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/employee", tags=["employee-voters"])
@@ -319,7 +320,7 @@ def update_address(voter_id: str, body: AddressChange, request: Request,
             if exc.status_code != 409:
                 raise
             election = None
-        if election and election.get("status") in {"open", "closed", "counting", "finalised"} and voter.get("voted") is True:
+        if election and election.get("status") in {"open", "closed", "counting", "finalised"} and has_voted(voter, election.id):
             raise HTTPException(status_code=409, detail="Address cannot be changed after voting in this election")
         if election:
             division_ref = election.reference.collection("divisions").document(body.newDivisionId)

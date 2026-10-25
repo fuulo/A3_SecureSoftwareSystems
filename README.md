@@ -70,6 +70,7 @@ python -m pytest backend/tests
 | --- | --- | --- |
 | `POST /api/voter/ballots` | Enrolled voter (Firebase token) | Records House and Senate ballots and returns a one-time receipt code |
 | `POST /api/admin/elections/{id}/results/publish` | Admin | Counts a finalised election and freezes the result package |
+| `POST /api/admin/elections/{id}/phase` with `{"to": "finalised"}` | Admin | Finalises only if voters marked voted, House ballots, Senate ballots and receipts all match (R-05); a mismatch is refused and logged |
 | `GET /api/public/results` | Anyone | Latest published results and their SHA-256 fingerprint |
 | `GET /api/public/results/package.json` | Anyone | Downloadable result package (the exact published bytes) |
 | `POST /api/public/receipts/verify` | Anyone (10 per minute) | Confirms a receipt's ballot was recorded, never its contents |
@@ -169,6 +170,7 @@ npm run dev
 | Download the official package from the page, then click Verify | "This result package is genuine and consistent"; every check is ticked |
 | Edit one vote count in the downloaded file and verify it | Fails "Fingerprint matches" and "Totals add up" for that contest |
 | Edit a count and also the contest's `informal`, so the totals still add up | Totals pass, but "Fingerprint matches" still fails |
+| Change `votersMarkedVoted` in the downloaded file and verify it | Fails "One ballot per voter who voted" and "Fingerprint matches" |
 | Verify the untouched file with one character of the fingerprint changed | Fails "Fingerprint matches" |
 | Choose a non-JSON file, or a file over 2 MB | A clear error, and nothing is checked |
 | DevTools → Network while verifying | No request is sent: the file is hashed in the browser |
