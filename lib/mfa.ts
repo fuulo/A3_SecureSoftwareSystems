@@ -1,5 +1,34 @@
-import { signOut, type MultiFactorResolver, type User } from "firebase/auth";
+import {
+  RecaptchaVerifier,
+  signOut,
+  type MultiFactorResolver,
+  type User,
+} from "firebase/auth";
 import { auth } from "@/lib/firebase";
+
+export type InvisibleRecaptcha = {
+  verifier: RecaptchaVerifier;
+  dispose: () => void;
+};
+
+// reCAPTCHA refuses to render twice into the same element, and Next.js keeps
+// visited pages mounted, so each attempt to send a code gets a fresh element
+// inside `host`. dispose() removes both the reCAPTCHA and its element.
+export function createInvisibleRecaptcha(host: HTMLElement | null): InvisibleRecaptcha {
+  const container = document.createElement("div");
+  (host ?? document.body).appendChild(container);
+  const verifier = new RecaptchaVerifier(auth, container, { size: "invisible" });
+  let disposed = false;
+  return {
+    verifier,
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      verifier.clear();
+      container.remove();
+    },
+  };
+}
 
 // The first-step sign-in result (the "resolver") has to travel from the login
 // page to the verify page. It is an object, so it cannot go in sessionStorage.
@@ -107,6 +136,9 @@ export function getMfaErrorMessage(error: unknown): string {
     case "auth/operation-not-allowed":
       return "Text message verification is not enabled for this project or region.";
     default:
-      return "Something went wrong. Please try again.";
+      // The code lets a user's report be traced to the actual Firebase error
+      return code
+        ? `Something went wrong (${code}). Please try again.`
+        : "Something went wrong. Please try again.";
   }
 }

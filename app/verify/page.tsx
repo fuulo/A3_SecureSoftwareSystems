@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import {
   PhoneAuthProvider,
   PhoneMultiFactorGenerator,
-  RecaptchaVerifier,
   signOut,
   type PhoneMultiFactorInfo,
 } from "firebase/auth";
@@ -14,6 +13,7 @@ import { ApiError } from "@/lib/api";
 import { getDashboardPath } from "@/lib/dashboard";
 import {
   ACCOUNT_LOCKED_REASON,
+  createInvisibleRecaptcha,
   getMfaErrorMessage,
   getPendingMfa,
   getPendingMfaDeadline,
@@ -21,6 +21,7 @@ import {
   MFA_TIME_LIMIT_SECONDS,
   MFA_TIMEOUT_REASON,
   setPendingMfa,
+  type InvisibleRecaptcha,
 } from "@/lib/mfa";
 import { attemptsLeftMessage, reportFailedSignIn, reportSuccessfulSignIn } from "@/lib/lockout";
 import { mainHeader, buttonStyle } from "@/components/styles";
@@ -51,7 +52,8 @@ export default function AuthenticationCodePage() {
   const [secondsLeft, setSecondsLeft] = useState(0);
   const [secondsToExpiry, setSecondsToExpiry] = useState(MFA_TIME_LIMIT_SECONDS);
 
-  const recaptchaRef = useRef<RecaptchaVerifier | null>(null);
+  const recaptchaRef = useRef<InvisibleRecaptcha | null>(null);
+  const recaptchaHostRef = useRef<HTMLDivElement>(null);
 
   // Ends the login attempt when the time limit has passed
   const expireLogin = useCallback(() => {
@@ -115,7 +117,7 @@ export default function AuthenticationCodePage() {
   // Remove the reCAPTCHA when leaving the page
   useEffect(() => {
     return () => {
-      recaptchaRef.current?.clear();
+      recaptchaRef.current?.dispose();
       recaptchaRef.current = null;
     };
   }, []);
@@ -153,14 +155,12 @@ export default function AuthenticationCodePage() {
     setIsSending(true);
 
     try {
-      const recaptcha = new RecaptchaVerifier(auth, "recaptcha-container", {
-        size: "invisible",
-      });
+      const recaptcha = createInvisibleRecaptcha(recaptchaHostRef.current);
       recaptchaRef.current = recaptcha;
 
       const id = await new PhoneAuthProvider(auth).verifyPhoneNumber(
         { multiFactorHint: hint, session: resolver.session },
-        recaptcha
+        recaptcha.verifier
       );
 
       setVerificationId(id);
@@ -170,10 +170,11 @@ export default function AuthenticationCodePage() {
       setSecondsLeft(RESEND_SECONDS);
       setMessage("A code has been sent by text message.");
     } catch (firebaseError) {
+      console.error("Sending the verification code failed:", firebaseError);
       setError(getMfaErrorMessage(firebaseError));
     } finally {
       // A reCAPTCHA token works only once, so start fresh next time
-      recaptchaRef.current?.clear();
+      recaptchaRef.current?.dispose();
       recaptchaRef.current = null;
       setIsSending(false);
     }
@@ -413,8 +414,8 @@ export default function AuthenticationCodePage() {
           </button>
         </div>
 
-        {/* Used by the invisible reCAPTCHA */}
-        <div id="recaptcha-container" />
+        {/* Holds the invisible reCAPTCHA */}
+        <div ref={recaptchaHostRef} />
       </section>
     </main>
   );

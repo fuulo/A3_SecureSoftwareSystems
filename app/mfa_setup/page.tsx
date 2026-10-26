@@ -7,13 +7,17 @@ import {
   onAuthStateChanged,
   PhoneAuthProvider,
   PhoneMultiFactorGenerator,
-  RecaptchaVerifier,
   signOut,
   type User,
 } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import { getDashboardPath } from "@/lib/dashboard";
-import { getMfaErrorMessage, toE164AU } from "@/lib/mfa";
+import {
+  createInvisibleRecaptcha,
+  getMfaErrorMessage,
+  toE164AU,
+  type InvisibleRecaptcha,
+} from "@/lib/mfa";
 import { buttonStyle, mainHeader } from "@/components/styles";
 
 const CODE_LENGTH = 6;
@@ -35,7 +39,8 @@ export default function MfaSetupPage() {
   const [error, setError] = useState("");
   const [isBusy, setIsBusy] = useState(false);
 
-  const recaptchaRef = useRef<RecaptchaVerifier | null>(null);
+  const recaptchaRef = useRef<InvisibleRecaptcha | null>(null);
+  const recaptchaHostRef = useRef<HTMLDivElement>(null);
 
   // Next.js keeps this page mounted but hidden after navigating away
   // (cacheComponents), so start over on every visit. The sign-in check
@@ -83,7 +88,7 @@ export default function MfaSetupPage() {
 
     return () => {
       unsubscribe();
-      recaptchaRef.current?.clear();
+      recaptchaRef.current?.dispose();
       recaptchaRef.current = null;
     };
   }, [router]);
@@ -126,24 +131,23 @@ export default function MfaSetupPage() {
     try {
       const session = await multiFactor(user).getSession();
 
-      const recaptcha = new RecaptchaVerifier(auth, "recaptcha-container", {
-        size: "invisible",
-      });
+      const recaptcha = createInvisibleRecaptcha(recaptchaHostRef.current);
       recaptchaRef.current = recaptcha;
 
       const id = await new PhoneAuthProvider(auth).verifyPhoneNumber(
         { phoneNumber: e164, session },
-        recaptcha
+        recaptcha.verifier
       );
 
       setVerificationId(id);
       setCode("");
       setStep("code");
     } catch (firebaseError) {
+      console.error("Sending the verification code failed:", firebaseError);
       setError(getMfaErrorMessage(firebaseError));
     } finally {
       // A reCAPTCHA token works only once, so start fresh next time
-      recaptchaRef.current?.clear();
+      recaptchaRef.current?.dispose();
       recaptchaRef.current = null;
       setIsBusy(false);
     }
@@ -377,8 +381,8 @@ export default function MfaSetupPage() {
           </div>
         )}
 
-        {/* Used by the invisible reCAPTCHA */}
-        <div id="recaptcha-container" />
+        {/* Holds the invisible reCAPTCHA */}
+        <div ref={recaptchaHostRef} />
       </section>
     </main>
   );
