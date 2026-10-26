@@ -10,7 +10,7 @@ from backend.firestore_client import db
 from backend.models import ReceiptCheck
 from backend.rate_limit import limiter
 from backend.receipts import normalize_receipt, receipt_hashes, receipt_list
-from backend.security import hashing
+from backend.security import hashing, signing
 
 router = APIRouter(prefix="/api/public", tags=["public"])
 # One message for every miss, so lookups reveal nothing beyond "not found".
@@ -30,6 +30,13 @@ def _latest_published() -> dict[str, Any]:
     return items[0].to_dict() or {}
 
 
+def _signature(published: dict[str, Any]) -> dict[str, str] | None:
+    if not published.get("signature"):
+        return None
+    return {"algorithm": published["signatureAlgorithm"], "keyId": published["signingKeyId"],
+            "value": published["signature"]}
+
+
 @router.get("/results")
 def published_results(response: Response) -> dict[str, Any]:
     published = _latest_published()
@@ -45,6 +52,8 @@ def published_results(response: Response) -> dict[str, Any]:
         # Kept for clients that predate "fingerprint"
         **({"sha256": fingerprint} if algorithm == "sha256" else {}),
         "package": json.loads(published["packageJson"]),
+        # Ed25519 signature of the package bytes (R-09); null for packages published before signing
+        "signature": _signature(published),
         # Where the package and receipt list are archived (R-06); missing before archiving existed
         "archive": published.get("archive"),
     }
@@ -65,6 +74,33 @@ def result_package() -> Response:
             "Cache-Control": CACHE,
         },
     )
+
+
+@router.get("/results/package.sig")
+def result_package_signature() -> Response:
+    # Raw signature bytes, for checking a downloaded package with standard tools such as openssl
+    published = _latest_published()
+    if not published.get("signature"):
+        raise HTTPException(status_code=404, detail="These results were published before results were signed")
+    return Response(
+        content=bytes.fromhex(published["signature"]),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="result-package-{_file_name(published)}.sig"',
+            "Cache-Control": CACHE,
+        },
+    )
+
+
+@router.get("/results/signing-key")
+def results_signing_key(response: Response) -> dict[str, str]:
+    # Read from the key file, not Firestore, so changing the database cannot change the key
+    try:
+        key = signing.public_key()
+    except signing.SigningKeyMissing as exc:
+        raise HTTPException(status_code=404, detail="No results signing key is configured") from exc
+    response.headers["Cache-Control"] = CACHE
+    return key
 
 
 @router.get("/results/receipts.txt")

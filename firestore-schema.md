@@ -560,6 +560,10 @@ algorithm change still verify.
   "hashAlgorithm": "sha256",  // the `results` algorithm: sha256, sha384 or sha512 (browser-checkable)
   "sha256": "hex",            // same as fingerprint, present only when the algorithm is sha256;
                               // packages published before fingerprint existed have only this
+  "signature": "hex",         // R-09: Ed25519 signature of packageJson's bytes (64 bytes);
+                              // missing for results published before signing
+  "signatureAlgorithm": "Ed25519",
+  "signingKeyId": "hex",      // first 16 hex of SHA-256 of the raw public key
   "receiptsFingerprint": "hex",  // receipt list hash, `results` algorithm (also in the package)
   "archive": {                // R-06 write-once copy; null if ARCHIVE_REQUIRED was off
     "provider": "backblaze-b2",
@@ -569,6 +573,8 @@ algorithm change still verify.
     "files": [
       { "name": "elections/fed2028/result-package-<fingerprint>.json", "fileId": "...",
         "fingerprint": "hex", "hashAlgorithm": "sha256", "size": 1234 },
+      { "name": "elections/fed2028/result-package-<fingerprint>.sig", ... },  // raw signature
+      { "name": "elections/fed2028/results-signing-key-<signingKeyId>.pem", ... },  // public key
       { "name": "elections/fed2028/receipts-<receiptsFingerprint>.txt", "fileId": "...",
         "fingerprint": "hex", "hashAlgorithm": "sha256", "size": 1234 }
     ]

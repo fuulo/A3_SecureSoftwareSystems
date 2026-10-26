@@ -32,7 +32,7 @@ contains no algorithm choices: it calls the interfaces below.
 | 6 | Data encryption and key management | `EncryptionService`, `get_encryption_service()` ([backend/security/](./backend/security/)) | AES-256-GCM, versioned keys, 90-day rotation | New key version, or a new service class | ✅ |
 | 7 | Ballot receipts | `issue_receipt`, `receipt_hash` ([backend/receipts.py](./backend/receipts.py)) | Hash provider, `receipt` | `HASH_ALGORITHM_RECEIPT`; earlier receipts still verify | ✅ |
 | 8 | Audit log integrity | `write_audit`, chain verification ([backend/audit.py](./backend/audit.py)) | Hash chain, provider `audit` | `HASH_ALGORITHM_AUDIT`; each entry names its algorithm and the chain verifies across a change | ✅ |
-| 9 | Result integrity | `publish_results`, `GET /api/public/results`, the verify-package page | Fingerprint, provider `results` | `HASH_ALGORITHM_RESULTS` (sha256, sha384, sha512); the browser check follows the published algorithm | ✅ |
+| 9 | Result integrity | `publish_results`, `GET /api/public/results`, the verify-package page; signing in [backend/security/signing.py](./backend/security/signing.py) | Fingerprint, provider `results`; Ed25519 signature of the package bytes | `HASH_ALGORITHM_RESULTS` (sha256, sha384, sha512); the browser check follows the published algorithm. A new key file replaces the signing key; each signature names its key ID | ✅ |
 | 10 | Authentication and MFA | Firebase Authentication; on the API, `verify_firebase_token` | Password and SMS one-time code | The API side is one function, but the sign-in pages and [lib/mfa.ts](./lib/mfa.ts) use the Firebase SDK directly | ⚠️ Partly: a new provider means rewriting the sign-in pages, not the voting logic |
 | 11 | Voter identity index (GovID) | [backend/routers/employee_voters.py](./backend/routers/employee_voters.py), [backend/routers/voter_registration.py](./backend/routers/voter_registration.py) | Staff path: SHA-256 called directly; self-registration: keyed hash from the encryption module | Both call sites must change | ❌ Not yet |
 
@@ -200,6 +200,38 @@ ARCHIVE_REQUIRED=true
   results are published without an archive and the `results.publish` audit
   entry records `reason: archive_not_configured`.
 
+### Signed results (R-09)
+
+Every result package is signed with Ed25519 over its exact published bytes
+([backend/security/signing.py](./backend/security/signing.py)), and checked
+together with its fingerprint. The package names the receipt list's
+fingerprint, so the signature covers the receipt list too. The signature, its
+key ID and the public key are archived with the package (R-06), and the
+signature is written to the `results.publish` audit entry.
+
+Create the private key once per deployment, before results are published:
+
+```powershell
+python -m backend.security.signing   # writes certs/results-signing-key.pem
+```
+
+`RESULTS_SIGNING_KEY_FILE` in `backend/.env` sets another path. The key is
+never stored in Firestore, so someone able to change a published package in
+the database cannot re-sign it. Keep it secret and backed up. Everyone
+publishing to the same Firebase project must use the same key file, or
+signatures will not match the key the API serves. Without the key, publishing
+fails with 503 and nothing is archived or published.
+
+The verify-package page checks the signature in the browser (Web Crypto
+Ed25519). To check a downloaded package without the site, save `publicKeyPem`
+from `GET /api/public/results/signing-key` as `results-signing-key.pem`:
+
+```powershell
+openssl pkeyutl -verify -pubin -inkey results-signing-key.pem -rawin -in result-package-fed2028.json -sigfile result-package-fed2028.sig
+```
+
+Tests: `python -m pytest backend/tests/test_signing.py backend/tests/test_archive.py`
+
 ## Results, receipts and verification
 
 | Endpoint | Who | Purpose |
@@ -209,8 +241,10 @@ ARCHIVE_REQUIRED=true
 | `POST /api/voter/ballots/{electionId}/submit` | Voter with an active session | Validates the ballot, stores it encrypted (AES-256-GCM), marks the voter as voted and returns a one-time receipt code, all in one transaction |
 | `POST /api/admin/elections/{id}/results/publish` | Admin | Counts a finalised election, archives the package and receipt list for 7 years (R-06), then freezes the result package |
 | `POST /api/admin/elections/{id}/phase` with `{"to": "finalised"}` | Admin | Finalises only if voters marked voted, House ballots, Senate ballots and receipts all match (R-05); a mismatch is refused and logged |
-| `GET /api/public/results` | Anyone | Latest published results, their fingerprint and its hash algorithm (SHA-256 by default) |
+| `GET /api/public/results` | Anyone | Latest published results, their fingerprint and its hash algorithm (SHA-256 by default), and their Ed25519 `signature` (`algorithm`, `keyId`, `value`; null before signing) |
 | `GET /api/public/results/package.json` | Anyone | Downloadable result package (the exact published bytes) |
+| `GET /api/public/results/package.sig` | Anyone | Raw Ed25519 signature of the package (R-09), for checking with tools such as openssl; 404 for results published before signing |
+| `GET /api/public/results/signing-key` | Anyone | The results signing key (`algorithm`, `keyId`, `publicKeyPem`), read from the key file, not Firestore |
 | `GET /api/public/results/receipts.txt` | Anyone (30 per minute) | Receipt list: the hash of every receipt code (its receipt ID), sorted, one per line; its fingerprint is `receiptsFingerprint` in the package |
 | `POST /api/public/receipts/verify` | Anyone (10 per minute) | Confirms a receipt's ballot was recorded, never its contents |
 
