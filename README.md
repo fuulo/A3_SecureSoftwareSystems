@@ -204,6 +204,7 @@ ARCHIVE_REQUIRED=true
 
 | Endpoint | Who | Purpose |
 | --- | --- | --- |
+| `GET /api/voter/ballots/current` | Enrolled voter (Firebase token, voter IP allowlist) | The open election and the voter's House and Senate ballot papers in ballot order, used by `/voter/ballot`; once they have voted, only that fact |
 | `POST /api/voter/ballots/{electionId}/start` | Enrolled voter (Firebase token, voter IP allowlist) | Starts a 15-minute voting session; refused if the voter has voted in this election or already has an active session |
 | `POST /api/voter/ballots/{electionId}/submit` | Voter with an active session | Validates the ballot, stores it encrypted (AES-256-GCM), marks the voter as voted and returns a one-time receipt code, all in one transaction |
 | `POST /api/admin/elections/{id}/results/publish` | Admin | Counts a finalised election, archives the package and receipt list for 7 years (R-06), then freezes the result package |

@@ -129,6 +129,79 @@ def _audit_rejection(action: str, voter_id: str, voter_ref: Any, exc: BallotReje
         logger.exception("Unable to record rejected %s", action)
 
 
+def _party(parties: dict[str, dict[str, Any]], party_id: str | None) -> str:
+    return (parties.get(party_id or "") or {}).get("name") or "Independent"
+
+
+def _entry(candidate_id: str, candidate: dict[str, Any], parties: dict[str, dict[str, Any]]) -> dict[str, str]:
+    return {"id": candidate_id, "name": candidate.get("name", candidate_id),
+            "party": _party(parties, candidate.get("partyId"))}
+
+
+def current_ballot(voter: dict[str, Any]) -> dict[str, Any]:
+    """The open election and this voter's House and Senate ballot papers, in ballot order.
+
+    Only contests and choices the submit route accepts are listed: the voter's
+    division, their state's groups with candidates, and usable candidates.
+    """
+    if voter.get("enrolmentStatus") != "enrolled":
+        raise HTTPException(status_code=403, detail="Only enrolled voters can vote")
+    opened = list(db.collection("elections").where("status", "==", "open").limit(2).stream())
+    if len(opened) != 1:
+        raise HTTPException(status_code=404, detail="Voting is not open")
+    election_ref, election = opened[0].reference, opened[0].to_dict() or {}
+    summary = {"id": election_ref.id, "name": election.get("name", election_ref.id),
+               "openAt": election.get("openAt"), "closeAt": election.get("closeAt")}
+    expires_at = voter.get("sessionExpiresAt")
+    status = {"hasVoted": has_voted(voter, election_ref.id),
+              "sessionExpiresAt": expires_at if _session_active(voter, election_ref.id) else None}
+    if status["hasVoted"]:
+        return {"election": summary, "voter": status, "house": None, "senate": None}
+
+    division_id, state_id = voter.get("divisionId"), voter.get("stateId")
+    if not division_id or not state_id:
+        raise HTTPException(status_code=409, detail="Your enrolment has no division")
+    parties = {item.id: item.to_dict() or {} for item in election_ref.collection("parties").stream()}
+    usable = {item.id: item.to_dict() or {} for item in election_ref.collection("candidates").stream() if _usable(item)}
+
+    house = sorted(((cid, c) for cid, c in usable.items()
+                    if c.get("chamber") == "house" and c.get("divisionId") == division_id),
+                   key=lambda item: (item[1].get("ballotPosition", 0), item[0]))
+    senate = {cid: c for cid, c in usable.items() if c.get("chamber") == "senate" and c.get("stateId") == state_id}
+    groups = sorted(((item.id, item.to_dict() or {}) for item in
+                     election_ref.collection("senateGroups").where("stateId", "==", state_id).stream()),
+                    key=lambda item: (item[1].get("columnPosition", 0), item[0]))
+    ungrouped = sorted(((cid, c) for cid, c in senate.items() if not c.get("groupId")),
+                       key=lambda item: (item[1].get("ballotPosition", 0), item[0]))
+    division = election_ref.collection("divisions").document(division_id).get().to_dict() or {}
+    region = election_ref.collection("senateRegions").document(state_id).get().to_dict() or {}
+
+    return {
+        "election": summary,
+        "voter": status,
+        "house": {
+            "divisionId": division_id,
+            "divisionName": division.get("name", division_id),
+            "candidates": [_entry(cid, c, parties) for cid, c in house],
+        },
+        "senate": {
+            "stateId": state_id,
+            "regionName": region.get("name", state_id),
+            "senatorsToElect": int(region.get("senatorsToElect", 0)),
+            "minimumAbove": ballots.SENATE_BTL_MINIMUM,
+            "minimumBelow": ballots.SENATE_BTL_MINIMUM,
+            "groups": [
+                {"id": group_id, "letter": group.get("groupLetter", ""),
+                 "name": group.get("displayName", group_id), "party": _party(parties, group.get("partyId")),
+                 "candidates": [_entry(cid, senate[cid], parties)
+                                for cid in group.get("candidateOrder") or [] if cid in senate]}
+                for group_id, group in groups if group.get("candidateOrder")
+            ],
+            "ungrouped": [_entry(cid, c, parties) for cid, c in ungrouped],
+        },
+    }
+
+
 def start_session(voter_id: str, election_id: str, request: Request) -> datetime:
     """Mark the voter as voting in this election for SESSION_DURATION_MINUTES (R-04)."""
     voter_ref = db.collection("voters").document(voter_id)

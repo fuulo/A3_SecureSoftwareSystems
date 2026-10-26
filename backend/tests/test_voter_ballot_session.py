@@ -90,6 +90,60 @@ def _cast(env: Env, uid: str = "uid_1", body: dict = BALLOT):
     return env.post(SUBMIT_URL, body, uid=uid)
 
 
+# ------------------------------------------------------------ ballot paper
+
+CURRENT_URL = "/api/voter/ballots/current"
+
+
+def test_ballot_paper_lists_the_voters_contests_in_ballot_order(env):
+    base = f"elections/{ELECTION}"
+    env.store[f"{base}/parties/p1"] = {"name": "Party One"}
+    env.store[f"{base}/candidates/h1"]["ballotPosition"] = 2
+    env.store[f"{base}/candidates/h2"].update({"ballotPosition": 1, "partyId": "p1"})
+    env.store[f"{base}/candidates/h3"] = {"name": "h3", "chamber": "house", "divisionId": "div_vic",
+                                          "withdrawn": True}
+    env.store[f"{base}/candidates/s3"] = {"name": "s3", "chamber": "senate", "stateId": "VIC", "groupId": None}
+    env.store[f"{base}/senateGroups/g0"] = {"stateId": "VIC", "candidateOrder": []}
+    env.store[f"{base}/senateGroups/g9"] = {"stateId": "NSW", "candidateOrder": ["x1"]}
+
+    response = env.client.get(CURRENT_URL)
+
+    assert response.status_code == 200
+    paper = response.json()
+    assert paper["election"]["id"] == ELECTION
+    assert paper["voter"] == {"hasVoted": False, "sessionExpiresAt": None}
+    assert paper["house"]["divisionName"] == "Melbourne"
+    assert paper["house"]["candidates"] == [{"id": "h2", "name": "h2", "party": "Party One"},
+                                            {"id": "h1", "name": "h1", "party": "Independent"}]
+    assert paper["senate"]["regionName"] == "Victoria" and paper["senate"]["minimumBelow"] == 6
+    assert [(g["id"], [c["id"] for c in g["candidates"]]) for g in paper["senate"]["groups"]] == [
+        ("g1", ["s1", "s2"])]
+    assert [c["id"] for c in paper["senate"]["ungrouped"]] == ["s3"]
+
+
+def test_ballot_paper_shows_an_active_session_and_hides_the_ballot_after_voting(env):
+    env.post(START_URL)
+    assert env.client.get(CURRENT_URL).json()["voter"]["sessionExpiresAt"] is not None
+
+    env.post(SUBMIT_URL, BALLOT)
+    paper = env.client.get(CURRENT_URL).json()
+
+    assert paper["voter"]["hasVoted"] is True
+    assert paper["house"] is None and paper["senate"] is None
+
+
+def test_ballot_paper_needs_an_open_election(env):
+    env.store[f"elections/{ELECTION}"]["status"] = "closed"
+
+    assert env.client.get(CURRENT_URL).status_code == 404
+
+
+def test_ballot_paper_is_only_for_enrolled_voters(env):
+    env.voter()["enrolmentStatus"] = "pending"
+
+    assert env.client.get(CURRENT_URL).status_code == 403
+
+
 # ------------------------------------------------------------------- start
 
 
