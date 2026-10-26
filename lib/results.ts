@@ -33,8 +33,21 @@ export type ResultPackage = {
     senateBallotsCast?: number;
     votersMarkedVoted?: number;
     receiptsIssued: number;
+    // Added in package version 4: fingerprint of the published receipt list
+    // and its algorithm (one of FINGERPRINT_ALGORITHMS)
+    receiptsFingerprint?: string;
+    receiptsHashAlgorithm?: string;
   };
   contests: Contest[];
+};
+
+// Where the package and receipt list are archived, locked for 7 years (backend/archive.py)
+export type ResultArchive = {
+  provider: string;
+  bucket: string;
+  retentionMode: "compliance" | "governance";
+  retainUntil: string;
+  files: { name: string; fileId: string; fingerprint: string; hashAlgorithm: string; size: number }[];
 };
 
 export type PublishedResults = {
@@ -43,6 +56,8 @@ export type PublishedResults = {
   fingerprint: string;
   algorithm: string;
   package: ResultPackage;
+  // Missing for results published before archiving was added
+  archive?: ResultArchive | null;
 };
 
 // Algorithms results can be published with: all available to the browser's
@@ -67,6 +82,11 @@ export function algorithmForFingerprint(hex: string): FingerprintAlgorithm | und
 // Where voters can download the official result package (the exact published bytes)
 export function resultPackageUrl() {
   return publicApiUrl("/api/public/results/package.json");
+}
+
+// Every receipt hash for the published election, one per line
+export function receiptListUrl() {
+  return publicApiUrl("/api/public/results/receipts.txt");
 }
 
 // Latest published results, or null if nothing has been published yet

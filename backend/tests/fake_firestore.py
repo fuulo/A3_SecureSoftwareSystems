@@ -82,6 +82,11 @@ class FakeQuery:
     def limit(self, count: int) -> "FakeQuery":
         return self._clone(limit=count)
 
+    def count(self) -> SimpleNamespace:
+        # Same shape as an aggregation query: get()[0][0].value
+        total = len(self.stream())
+        return SimpleNamespace(get=lambda: [[SimpleNamespace(value=total)]])
+
     def stream(self, transaction: "FakeTransaction | None" = None) -> list[FakeSnapshot]:
         self._db.check_read(transaction)
         rows = [(path, data) for path, data in self._db.store.items() if _parent(path) == self._path]

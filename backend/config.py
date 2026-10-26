@@ -46,3 +46,10 @@ SMTP_USERNAME = os.getenv("SMTP_USERNAME")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL")
 SMTP_USE_SSL = _as_bool(os.getenv("SMTP_USE_SSL"))
+# Write-once result archive (R-06) in a Backblaze B2 bucket with Object Lock enabled.
+B2_KEY_ID = os.getenv("B2_KEY_ID")
+B2_APPLICATION_KEY = os.getenv("B2_APPLICATION_KEY")
+B2_BUCKET = os.getenv("B2_BUCKET")
+# "compliance" for real elections; "governance" only for test buckets.
+B2_RETENTION_MODE = os.getenv("B2_RETENTION_MODE")
+ARCHIVE_REQUIRED = _as_bool(os.getenv("ARCHIVE_REQUIRED"), default=True)

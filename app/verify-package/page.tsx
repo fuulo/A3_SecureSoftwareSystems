@@ -9,13 +9,18 @@ import {
   fingerprintAlgorithm,
   FINGERPRINT_ALGORITHMS,
   formatNumber,
+  receiptListUrl,
   resultPackageUrl,
   type FingerprintAlgorithm,
 } from "../../lib/results";
+import { RECEIPT_ALPHABET, RECEIPT_LENGTH } from "../../lib/receipts";
 
 // Settings (change them here)
 const MAX_FILE_MB = 2;
 const MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024;
+const MAX_LIST_MB = 20;
+const MAX_LIST_BYTES = MAX_LIST_MB * 1024 * 1024;
+const RECEIPT_CODE = new RegExp(`^[${RECEIPT_ALPHABET}]{${RECEIPT_LENGTH}}$`);
 
 type Check = {
   label: string;
@@ -30,7 +35,7 @@ type Outcome = {
 };
 
 // Hashes the file in the browser. The file is never uploaded anywhere.
-async function fingerprintHex(buffer: ArrayBuffer, algorithm: FingerprintAlgorithm) {
+async function fingerprintHex(buffer: BufferSource, algorithm: FingerprintAlgorithm) {
   const digest = await crypto.subtle.digest(algorithm.label, buffer);
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, "0"))
@@ -161,10 +166,112 @@ function checkContents(text: string): Check[] {
   return checks;
 }
 
+// Receipt codes as typed by voters, e.g. "7kq2-m9xd-4rta-h8wc" -> "7KQ2M9XD4RTAH8WC"
+function normalizeReceipt(code: string) {
+  return code.replace(/[\s-]/g, "").toUpperCase();
+}
+
+// A receipt's ID in the list for one algorithm: plain hex for SHA-256, the
+// original algorithm, otherwise "<algorithm>-<hex>" (backend/security/hashing.py)
+async function receiptId(code: string, algorithm: FingerprintAlgorithm) {
+  const hex = await fingerprintHex(new TextEncoder().encode(code), algorithm);
+  return algorithm.name === "sha256" ? hex : `${algorithm.name}-${hex}`;
+}
+
+// Checks a downloaded receipt list against the package and, if given, one receipt code.
+// The list holds the ID (a hash) of every receipt code, sorted, one per line.
+async function checkReceiptList(
+  packageText: string,
+  listBuffer: ArrayBuffer,
+  code: string
+): Promise<Check[]> {
+  let election: unknown;
+  try {
+    const data: unknown = JSON.parse(packageText);
+    election = isRecord(data) ? data.election : undefined;
+  } catch {
+    election = undefined;
+  }
+  const expected =
+    isRecord(election) && typeof election.receiptsFingerprint === "string"
+      ? election.receiptsFingerprint
+      : null;
+  // The package names the algorithm; older readers can tell it from the length
+  const listAlgorithm =
+    expected === null
+      ? undefined
+      : (isRecord(election) && typeof election.receiptsHashAlgorithm === "string"
+          ? fingerprintAlgorithm(election.receiptsHashAlgorithm)
+          : undefined) ?? algorithmForFingerprint(expected);
+  const listHash = listAlgorithm ? await fingerprintHex(listBuffer, listAlgorithm) : null;
+  const issued =
+    isRecord(election) && isCount(election.receiptsIssued) ? election.receiptsIssued : null;
+  const listText = new TextDecoder().decode(listBuffer);
+  const lines = listText.endsWith("\n") ? listText.slice(0, -1).split("\n") : listText.split("\n");
+  const hashes = listText === "" ? [] : lines;
+  const ordered = hashes.every(
+    (line, i) => /^(?:[a-z0-9_]+-)?[0-9a-f]+$/.test(line) && (i === 0 || hashes[i - 1] < line)
+  );
+
+  const checks: Check[] = [
+    {
+      label: "Receipt list matches the package",
+      passed: listHash !== null && listHash === expected,
+      detail:
+        expected === null
+          ? "This package has no receipt list fingerprint. It was published before receipt lists were added."
+          : listHash === null
+            ? "The package's receipt list fingerprint uses an algorithm this page cannot check."
+            : listHash === expected
+              ? "The receipt list is identical to the one published with these results."
+              : "The receipt list differs from the published one. It may have been changed.",
+    },
+    {
+      label: "Every receipt listed once",
+      passed: ordered && issued !== null && hashes.length === issued,
+      detail: `${formatNumber(hashes.length)} receipts in the list, ${
+        issued === null ? "unknown" : formatNumber(issued)
+      } issued${ordered ? "" : "; the list contains invalid, repeated or unsorted lines"}.`,
+    },
+  ];
+
+  if (code) {
+    // Try every algorithm a browser can calculate, since receipts issued before
+    // an algorithm upgrade keep their original IDs
+    const listed = new Set(hashes);
+    const candidates = await Promise.all(
+      FINGERPRINT_ALGORITHMS.map((algorithm) => receiptId(code, algorithm))
+    );
+    const found = candidates.some((id) => listed.has(id));
+    // IDs from algorithms browsers lack (such as SHA-3) cannot be checked here
+    const browserNames = new Set<string>(FINGERPRINT_ALGORITHMS.map((a) => a.name));
+    const unchecked = [
+      ...new Set(
+        hashes
+          .map((line) => (line.includes("-") ? line.split("-")[0] : "sha256"))
+          .filter((name) => !browserNames.has(name))
+      ),
+    ];
+    checks.push({
+      label: "Your receipt is in the list",
+      passed: found,
+      detail: found
+        ? "Your ballot is among the published receipts. Your code was not sent anywhere."
+        : unchecked.length > 0
+          ? `Your receipt was not found, but some receipts use ${unchecked.join(", ")}, which browsers cannot calculate. Use "Verify receipt" instead.`
+          : "This receipt code is not in the list. Check the code and try again.",
+    });
+  }
+
+  return checks;
+}
+
 export default function VerifyPackagePage() {
   const formRef = useRef<HTMLFormElement>(null);
   const publishedHash = useRef("");
   const [file, setFile] = useState<File | null>(null);
+  const [receiptFile, setReceiptFile] = useState<File | null>(null);
+  const [receiptCode, setReceiptCode] = useState("");
   const [expectedHash, setExpectedHash] = useState("");
   // Name of the published fingerprint's algorithm, for the field label
   const [publishedLabel, setPublishedLabel] = useState("");
@@ -205,6 +312,8 @@ export default function VerifyPackagePage() {
     function clearForm() {
       formRef.current?.reset();
       setFile(null);
+      setReceiptFile(null);
+      setReceiptCode("");
       setExpectedHash(publishedHash.current);
       setError("");
       setOutcome(null);
@@ -239,6 +348,19 @@ export default function VerifyPackagePage() {
       setError(`The expected fingerprint must be ${lengths} characters long (0-9 and a-f).`);
       return;
     }
+    const code = normalizeReceipt(receiptCode);
+    if (code && !receiptFile) {
+      setError("Choose the receipt list to check your receipt code against.");
+      return;
+    }
+    if (code && !RECEIPT_CODE.test(code)) {
+      setError(`Please enter all ${RECEIPT_LENGTH} characters of your receipt code.`);
+      return;
+    }
+    if (receiptFile && receiptFile.size > MAX_LIST_BYTES) {
+      setError(`The receipt list is too large. It must be smaller than ${MAX_LIST_MB} MB.`);
+      return;
+    }
     if (!window.crypto?.subtle) {
       setError("Your browser cannot calculate fingerprints on this connection. Use HTTPS.");
       return;
@@ -250,6 +372,10 @@ export default function VerifyPackagePage() {
       const buffer = await file.arrayBuffer();
       const computedHash = await fingerprintHex(buffer, algorithm);
       const text = new TextDecoder().decode(buffer);
+      let receiptChecks: Check[] = [];
+      if (receiptFile) {
+        receiptChecks = await checkReceiptList(text, await receiptFile.arrayBuffer(), code);
+      }
 
       setOutcome({
         fileName: file.name,
@@ -264,6 +390,7 @@ export default function VerifyPackagePage() {
                 : "The file differs from the published package. It may have been changed.",
           },
           ...checkContents(text),
+          ...receiptChecks,
         ],
       });
     } catch {
@@ -335,6 +462,58 @@ export default function VerifyPackagePage() {
                 "Filled in with the fingerprint published on the results page. You can paste one from another trusted source instead."}
             </p>
           </div>
+
+          <fieldset className="space-y-4 rounded-lg border border-slate-300 p-4">
+            <legend className="px-1 font-semibold text-[18px]">Receipt list (optional)</legend>
+            <div>
+              <label htmlFor="receipt-list" className="mb-1 block font-semibold">
+                Receipt list file
+              </label>
+              <input
+                id="receipt-list"
+                name="receiptList"
+                type="file"
+                accept=".txt,text/plain"
+                onChange={(e) => {
+                  setReceiptFile(e.target.files?.[0] ?? null);
+                  setOutcome(null);
+                  setError("");
+                }}
+                className="w-full rounded border border-slate-400 px-3 py-2 text-[14px] file:mr-4 file:rounded file:border-0 file:bg-[#1f538d] file:px-4 file:py-2 file:font-semibold file:text-white hover:file:bg-[#1b4779] focus:outline-none focus:ring-2 focus:ring-[#1f538d]"
+              />
+              <p className="mt-1 text-[13px] text-slate-600">
+                Checks that every receipt issued is in the published list.{" "}
+                <a href={receiptListUrl()} download className="text-[#1b4779] hover:underline">
+                  Download the receipt list
+                </a>
+                .
+              </p>
+            </div>
+            <div>
+              <label htmlFor="receipt-code" className="mb-1 block font-semibold">
+                Your receipt code
+              </label>
+              <input
+                id="receipt-code"
+                name="receiptCode"
+                type="text"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="e.g. 7KQ2-M9XD-4RTA-H8WC"
+                value={receiptCode}
+                onChange={(e) => {
+                  setReceiptCode(e.target.value);
+                  setOutcome(null);
+                  setError("");
+                }}
+                aria-describedby="receipt-code-help"
+                className="w-full rounded border border-slate-400 px-3 py-2 font-mono text-[14px] uppercase focus:outline-none focus:ring-2 focus:ring-[#1f538d]"
+              />
+              <p id="receipt-code-help" className="mt-1 text-[13px] text-slate-600">
+                Confirms your ballot is in the list. Your code is checked in your browser and never sent.
+              </p>
+            </div>
+          </fieldset>
 
           {error && (
             <p

@@ -174,15 +174,42 @@ Run the Python tests with:
 python -m pytest backend/tests
 ```
 
+### Result archive (R-06)
+
+Publishing results first uploads the result package and the receipt list to a
+Backblaze B2 bucket, each locked for 7 years with Object Lock. If they cannot be
+uploaded and locked, nothing is published. Add to `backend/.env`:
+
+```dotenv
+B2_KEY_ID=<application key ID>
+B2_APPLICATION_KEY=<application key>
+B2_BUCKET=voting-test
+B2_RETENTION_MODE=governance   # compliance for a real election
+ARCHIVE_REQUIRED=true
+```
+
+- Create the bucket with **Object Lock enabled** (B2 → Buckets → Create, or
+  Bucket Settings → Object Lock).
+- Restrict the application key to that bucket, with the capabilities
+  `listBuckets`, `readBucketRetentions`, `writeFiles`, `writeFileRetentions`
+  and `readFileRetentions`.
+- **Compliance** mode: nobody, including the account owner, can delete the
+  files (or the bucket) for 7 years. **Governance** mode can be lifted by a key
+  with `bypassGovernance`, so use it only for test buckets.
+- Without B2 (for example with the emulator), set `ARCHIVE_REQUIRED=false`:
+  results are published without an archive and the `results.publish` audit
+  entry records `reason: archive_not_configured`.
+
 ## Results, receipts and verification
 
 | Endpoint | Who | Purpose |
 | --- | --- | --- |
 | `POST /api/voter/ballots` | Enrolled voter (Firebase token) | Records House and Senate ballots and returns a one-time receipt code |
-| `POST /api/admin/elections/{id}/results/publish` | Admin | Counts a finalised election and freezes the result package |
+| `POST /api/admin/elections/{id}/results/publish` | Admin | Counts a finalised election, archives the package and receipt list for 7 years (R-06), then freezes the result package |
 | `POST /api/admin/elections/{id}/phase` with `{"to": "finalised"}` | Admin | Finalises only if voters marked voted, House ballots, Senate ballots and receipts all match (R-05); a mismatch is refused and logged |
 | `GET /api/public/results` | Anyone | Latest published results, their fingerprint and its hash algorithm (SHA-256 by default) |
 | `GET /api/public/results/package.json` | Anyone | Downloadable result package (the exact published bytes) |
+| `GET /api/public/results/receipts.txt` | Anyone (30 per minute) | Receipt list: the hash of every receipt code (its receipt ID), sorted, one per line; its fingerprint is `receiptsFingerprint` in the package |
 | `POST /api/public/receipts/verify` | Anyone (10 per minute) | Confirms a receipt's ballot was recorded, never its contents |
 
 ### Validate the three public pages from the frontend
@@ -258,6 +285,8 @@ npm run dev
 | Open the page after publishing | Summary cards (status Final, ballots cast, turnout, published time), then one table per House division and Senate state |
 | Compare the "Published SHA-256 fingerprint" with the seed output | Identical |
 | Click "Download result package (JSON)" | A file named `result-package-<electionId>.json` downloads |
+| Click "Download receipt list (TXT)" | A file named `receipts-<electionId>.txt` downloads, one receipt hash per line (64 characters with the default SHA-256) |
+| Read the note above the download links | "…cannot be deleted or changed until <date 7 years after publishing>" |
 | Stop the API and reload the page | "Results Unavailable" |
 
 #### 5. Verify receipt: `/verify-receipt`
@@ -284,6 +313,9 @@ npm run dev
 | Change `votersMarkedVoted` in the downloaded file and verify it | Fails "One ballot per voter who voted" and "Fingerprint matches" |
 | Verify the untouched file with one character of the fingerprint changed | Fails "Fingerprint matches" |
 | Choose a non-JSON file, or a file over 2 MB | A clear error, and nothing is checked |
+| Add the downloaded receipt list and a receipt printed by the seed | "Receipt list matches the package", "Every receipt listed once" and "Your receipt is in the list" pass |
+| Delete one line from the receipt list and verify again | Fails "Receipt list matches the package" and "Every receipt listed once" |
+| Change one character of the receipt code | Fails "Your receipt is in the list" |
 | DevTools → Network while verifying | No request is sent: the file is hashed in the browser |
 
 #### Clean up

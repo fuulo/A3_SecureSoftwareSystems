@@ -9,6 +9,7 @@ import {
   formatDateTime,
   formatNumber,
   formatPercent,
+  receiptListUrl,
   resultPackageUrl,
   type Contest,
   type PublishedResults,
@@ -193,13 +194,32 @@ export default function ResultsPage() {
             <p className="break-all font-mono text-[13px]">{results.fingerprint}</p>
           </div>
 
-          <a
-            href={resultPackageUrl()}
-            download
-            className="mt-4 inline-block text-[13px] capitalize text-[#1b4779] hover:underline"
-          >
-            Download result package (JSON)
-          </a>
+          {results.archive && (
+            <p className="mt-4 text-[13px] text-slate-600">
+              The package and the receipt list are archived in write-once storage and cannot be
+              deleted or changed until {formatDateTime(results.archive.retainUntil)} (
+              {results.archive.retentionMode} retention).
+            </p>
+          )}
+
+          <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2">
+            <a
+              href={resultPackageUrl()}
+              download
+              className="inline-block text-[13px] capitalize text-[#1b4779] hover:underline"
+            >
+              Download result package (JSON)
+            </a>
+            {results.package.election.receiptsFingerprint && (
+              <a
+                href={receiptListUrl()}
+                download
+                className="inline-block text-[13px] capitalize text-[#1b4779] hover:underline"
+              >
+                Download receipt list (TXT)
+              </a>
+            )}
+          </div>
         </section>
       </main>
 

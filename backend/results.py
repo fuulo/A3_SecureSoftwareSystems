@@ -4,7 +4,8 @@ The package is frozen as exact JSON bytes when published. Its fingerprint (the
 "results" algorithm in backend/security/hashing.py, SHA-256 by default) is
 stored next to it with the algorithm's name and written into the audit hash
 chain, so a downloaded copy can be checked against the fingerprint on the
-results page.
+results page. The package and the receipt list are also archived, locked for
+7 years (``backend.archive``), before anything is published.
 """
 import json
 import logging
@@ -16,13 +17,15 @@ from zoneinfo import ZoneInfo
 from fastapi import HTTPException, Request
 from google.cloud import firestore
 
+from backend.archive import archive_election
 from backend.audit import write_audit
 from backend.firestore_client import db
+from backend.receipts import receipt_list
 from backend.reconciliation import require_reconciled
 from backend.security import hashing
 
 logger = logging.getLogger(__name__)
-PACKAGE_VERSION = 3
+PACKAGE_VERSION = 4
 INDEPENDENT = "Independent"
 
 Docs = dict[str, dict[str, Any]]
@@ -131,7 +134,8 @@ def tally_senate(regions: Docs, groups: Docs, candidates: Docs, parties: Docs,
 
 def build_package(election_id: str, election: dict[str, Any], contests: list[dict[str, Any]], *,
                   enrolled: int, ballots_cast: int, senate_ballots_cast: int, voters_marked_voted: int,
-                  receipts_issued: int, published_at: datetime) -> dict[str, Any]:
+                  receipts_issued: int, receipts_fingerprint: str, receipts_hash_algorithm: str,
+                  published_at: datetime) -> dict[str, Any]:
     try:
         local = ZoneInfo(election.get("timezone") or "Australia/Melbourne")
     except Exception:
@@ -149,6 +153,10 @@ def build_package(election_id: str, election: dict[str, Any], contests: list[dic
             "senateBallotsCast": senate_ballots_cast,
             "votersMarkedVoted": voters_marked_voted,
             "receiptsIssued": receipts_issued,
+            # Fingerprint of the published receipt list (see backend.receipts.receipt_list),
+            # made with the "results" algorithm so browsers can check it.
+            "receiptsFingerprint": receipts_fingerprint,
+            "receiptsHashAlgorithm": receipts_hash_algorithm,
         },
         "contests": contests,
     }
@@ -191,6 +199,10 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
         + tally_senate(_docs(election_ref.collection("senateRegions")), _docs(election_ref.collection("senateGroups")),
                        candidates, parties, senate_ballots)
     )
+    receipts = receipt_list(election_id)
+    if receipts.count(b"\n") != reconciliation["receiptsIssued"]:
+        raise HTTPException(status_code=409, detail="Receipts changed while publishing; please try again")
+    receipts_algorithm, receipts_fingerprint = hashing.digest("results", receipts)
     published_at = datetime.now(timezone.utc)
     package = build_package(
         election_id, election, contests,
@@ -199,12 +211,19 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
         senate_ballots_cast=len(senate_ballots),
         voters_marked_voted=reconciliation["votersMarkedVoted"],
         receipts_issued=reconciliation["receiptsIssued"],
+        receipts_fingerprint=receipts_fingerprint,
+        receipts_hash_algorithm=receipts_algorithm,
         published_at=published_at,
     )
     content = package_bytes(package)
     algorithm, fingerprint = hashing.digest("results", content)
     # Kept beside the named fingerprint for readers that expect it
     legacy_field = {"sha256": fingerprint} if algorithm == "sha256" else {}
+    # Archived before anything is published, so results never go out without their 7-year copy.
+    archive = archive_election(election_id, {
+        f"result-package-{fingerprint}.json": (content, "application/json"),
+        f"receipts-{receipts_fingerprint}.txt": (receipts, "text/plain"),
+    }, published_at)
     transaction = db.transaction()
 
     @firestore.transactional
@@ -217,14 +236,18 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
                     target_type="election", target_id=election_id, target_path=published_ref.path,
                     before=None,
                     after={"fingerprint": fingerprint, "hashAlgorithm": algorithm,
-                           "ballotsCast": len(house_ballots)},
-                    outcome="success", reason=None, request=request, election_id=election_id)
+                           "ballotsCast": len(house_ballots),
+                           "receiptsFingerprint": receipts_fingerprint, "archive": archive},
+                    outcome="success", reason=None if archive else "archive_not_configured",
+                    request=request, election_id=election_id)
         tx.create(published_ref, {
             "electionId": election_id,
             "packageJson": content.decode("utf-8"),
             "fingerprint": fingerprint,
             "hashAlgorithm": algorithm,
             **legacy_field,
+            "receiptsFingerprint": receipts_fingerprint,
+            "archive": archive,
             "publishedAt": published_at,
             "publishedBy": actor.get("staffId"),
         })

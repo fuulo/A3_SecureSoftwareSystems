@@ -548,10 +548,32 @@ algorithm change still verify.
   "hashAlgorithm": "sha256",  // the `results` algorithm: sha256, sha384 or sha512 (browser-checkable)
   "sha256": "hex",            // same as fingerprint, present only when the algorithm is sha256;
                               // packages published before fingerprint existed have only this
+  "receiptsFingerprint": "hex",  // receipt list hash, `results` algorithm (also in the package)
+  "archive": {                // R-06 write-once copy; null if ARCHIVE_REQUIRED was off
+    "provider": "backblaze-b2",
+    "bucket": "voting-app",
+    "retentionMode": "compliance | governance",
+    "retainUntil": "timestamp",   // 7 years (2557 days) after publishedAt
+    "files": [
+      { "name": "elections/fed2028/result-package-<fingerprint>.json", "fileId": "...",
+        "fingerprint": "hex", "hashAlgorithm": "sha256", "size": 1234 },
+      { "name": "elections/fed2028/receipts-<receiptsFingerprint>.txt", "fileId": "...",
+        "fingerprint": "hex", "hashAlgorithm": "sha256", "size": 1234 }
+    ]
+  },
   "publishedAt": "timestamp",
   "publishedBy": "staffId"
 }
 ```
+
+**Receipt list (R-06).** Every receipt document ID for the election (plain hex
+for SHA-256 receipts, `<algorithm>-<hex>` after an upgrade), sorted, one per
+line, with no times or voter references. Its fingerprint is in the package as
+`receiptsFingerprint` with `receiptsHashAlgorithm`. It is archived with the
+package and served at `GET /api/public/results/receipts.txt`, so anyone can
+check a receipt against a copy without the API. Receipts are never written to
+the audit log individually, because audit entries name their actor and that
+would link a voter to their receipt.
 
 ---
 
