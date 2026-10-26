@@ -1,25 +1,40 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import {
   getMultiFactorResolver,
   signInWithEmailAndPassword,
   type MultiFactorError,
 } from "firebase/auth";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { auth } from "@/lib/firebase";
 import {
   mainHeader,
   buttonStyle,
 } from "@/components/styles";
-import { setPendingMfa } from "@/lib/mfa";
+import { LOGIN_NOTICES, setPendingMfa } from "@/lib/mfa";
+import {
+  checkLockout,
+  failedSignInMessage,
+  lockedMessage,
+  lockoutCheckErrorMessage,
+  reportSuccessfulSignIn,
+  type LockoutStatus,
+} from "@/lib/lockout";
+
+// Wrong email or password: these count towards locking the account
+const WRONG_CREDENTIAL_CODES = new Set([
+  "auth/invalid-credential",
+  "auth/user-not-found",
+  "auth/wrong-password",
+]);
 
 const inputStyle =
   "w-full rounded border border-slate-400 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#1f538d]";
 
 const linkStyle =
-  "text-[13px] text-[#1b4779] hover:underline";
+  "text-[16px] text-[#1b4779] hover:underline";
 
 function getLoginErrorMessage(
   firebaseError: unknown
@@ -51,7 +66,7 @@ function getLoginErrorMessage(
     }
 
     if (code === "auth/user-disabled") {
-      return "This account has been disabled.";
+      return "This account is locked or disabled. Please try again later.";
     }
   }
 
@@ -68,6 +83,22 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] =
     useState(false);
+
+  // Why the user was sent back here, if the verify page said so
+  const searchParams = useSearchParams();
+  const notice =
+    LOGIN_NOTICES.get(searchParams.get("reason") ?? "") ?? "";
+
+  // Next.js keeps this page mounted but hidden after navigating away
+  // (cacheComponents), so never leave a typed password behind
+  useLayoutEffect(() => {
+    return () => {
+      setEmail("");
+      setPassword("");
+      setError("");
+      setIsSubmitting(false);
+    };
+  }, []);
 
   async function handleSubmit(
     event: React.FormEvent<HTMLFormElement>
@@ -86,21 +117,35 @@ export default function LoginPage() {
     setIsSubmitting(true);
 
     try {
+      // Refuse a locked account before contacting Firebase
+      let lockout: LockoutStatus;
+      try {
+        lockout = await checkLockout(cleanEmail);
+      } catch (lockoutError) {
+        setError(lockoutCheckErrorMessage(lockoutError));
+        return;
+      }
+      if (lockout.locked) {
+        setError(lockedMessage(lockout.retryAfterSeconds));
+        return;
+      }
+
       await signInWithEmailAndPassword(auth, cleanEmail, password);
 
       // The password was enough, so this account has no phone set up yet
+      await reportSuccessfulSignIn();
       setEmail("");
       setPassword("");
       router.replace("/mfa_setup");
     } catch (firebaseError) {
+      const code = (firebaseError as { code?: string }).code ?? "";
+
       // This is expected for accounts with a phone set up:
       // Firebase asks for the second step
-      if (
-        (firebaseError as { code?: string }).code ===
-        "auth/multi-factor-auth-required"
-      ) {
+      if (code === "auth/multi-factor-auth-required") {
         setPendingMfa(
-          getMultiFactorResolver(auth, firebaseError as MultiFactorError)
+          getMultiFactorResolver(auth, firebaseError as MultiFactorError),
+          cleanEmail
         );
         setEmail("");
         setPassword("");
@@ -110,7 +155,12 @@ export default function LoginPage() {
       }
 
       console.error(firebaseError);
-      setError(getLoginErrorMessage(firebaseError));
+      const message = getLoginErrorMessage(firebaseError);
+      setError(
+        WRONG_CREDENTIAL_CODES.has(code)
+          ? await failedSignInMessage(cleanEmail, message)
+          : message
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -126,6 +176,15 @@ export default function LoginPage() {
         <p className="mb-8 text-center text-slate-600">
           Enter your email address and password.
         </p>
+
+        {notice && (
+          <p
+            role="status"
+            className="mb-5 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-[13px] text-amber-800"
+          >
+            {notice}
+          </p>
+        )}
 
         <form
           onSubmit={handleSubmit}
@@ -204,14 +263,14 @@ export default function LoginPage() {
             href="/forgot_pw"
             className={linkStyle}
           >
-            Forgot password?
+            Forgot Your Password?
           </Link>
 
           <Link
             href="/create_acct"
             className={linkStyle}
           >
-            Create account
+            Create a Voter Account
           </Link>
         </div>
 
@@ -220,7 +279,7 @@ export default function LoginPage() {
             href="/"
             className={linkStyle}
           >
-            Back to home page
+            Back to Home Page
           </Link>
         </div>
       </section>

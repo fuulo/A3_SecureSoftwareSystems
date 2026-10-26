@@ -1,17 +1,17 @@
 """Ballot receipt codes.
 
 A receipt proves a ballot was recorded without saying who cast it or what it
-contains. Only the SHA-256 of each code is stored, so the receipts collection
-cannot be turned back into working codes, and a receipt holds no voter or
-ballot reference.
+contains. Only a hash of each code is stored (the "receipt" algorithm in
+backend/security/hashing.py), so the receipts collection cannot be turned back
+into working codes, and a receipt holds no voter or ballot reference.
 """
-import hashlib
 import re
 import secrets
 from datetime import datetime, timezone
 from typing import Any
 
 from backend.firestore_client import db
+from backend.security import hashing
 
 # Letters and numbers without look-alikes (0/O, 1/I/L); must match lib/receipts.ts.
 ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
@@ -32,7 +32,14 @@ def format_receipt(code: str) -> str:
 
 
 def receipt_hash(code: str) -> str:
-    return hashlib.sha256(code.encode("utf-8")).hexdigest()
+    """The document ID a new receipt is stored under."""
+    return hashing.document_id("receipt", code)
+
+
+def receipt_hashes(code: str) -> list[str]:
+    """Every ID the receipt may be stored under, so receipts issued before an
+    algorithm upgrade still verify."""
+    return hashing.document_ids("receipt", code)
 
 
 def new_receipt_code() -> str:
@@ -53,9 +60,11 @@ def issue_receipt(tx: Any, election_id: str) -> tuple[str, datetime]:
 
 
 def receipt_list(election_id: str) -> bytes:
-    """The public receipt list: every receipt hash for an election, sorted, one per line.
+    """The public receipt list: every receipt ID for an election, sorted, one per line.
 
-    It holds no times or voter references. Its SHA-256 goes into the result
+    Each ID is the hash of a receipt code: plain hex for SHA-256, or
+    "<algorithm>-<hex>" after an algorithm upgrade (see hashing.document_id).
+    It holds no times or voter references. Its fingerprint goes into the result
     package, so anyone can check a receipt against a copy without this API, and
     there are far too many possible codes to work one out from its hash.
     """

@@ -2,6 +2,65 @@
 
 An academic e-voting prototype with a Next.js frontend and a Python FastAPI staff API.
 
+## Architecture and replaceable security
+
+The system is built from distinct subsystems around a centralised database.
+Security mechanisms and cryptographic standards sit behind interfaces, so they
+can be replaced or upgraded without redesigning the core voting functionality.
+
+| Part | Runs as | Responsible for |
+| --- | --- | --- |
+| Frontend | Next.js behind its own TLS listener (`npm run dev`) | Pages for voters, staff and the public; calls the API over HTTPS |
+| API | FastAPI behind its own TLS listener (`python -m backend.tls_server`) | Voting, counting, staff and election management; each security mechanism in its own module |
+| Firebase | Managed service | Sign-in (Authentication) and the centralised database (Firestore), shared by both |
+
+**Core voting functionality** is ballot casting (`record_ballot` in
+[backend/routers/voter_ballots.py](./backend/routers/voter_ballots.py)),
+reconciliation ([backend/reconciliation.py](./backend/reconciliation.py)), and
+counting and publication ([backend/results.py](./backend/results.py)). It
+contains no algorithm choices: it calls the interfaces below.
+
+### Security subsystems
+
+| # | Subsystem | Interface used by the rest of the system | Mechanism or standard | How to replace or upgrade | Replaceable without redesigning voting |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Transport security | [tls-policy.json](./tls-policy.json); listeners that wrap each app ([server/secure-listener.mjs](./server/secure-listener.mjs), [backend/tls_server.py](./backend/tls_server.py)) | TLS 1.3, AEAD cipher suites | Edit `tls-policy.json` and restart both servers, or swap a listener | ✅ |
+| 2 | Session management | `verify_token` ([backend/auth.py](./backend/auth.py)), [backend/sessions.py](./backend/sessions.py), [lib/session.ts](./lib/session.ts) | JWT (HS256), 2-minute inactivity timeout | `SESSION_SIGNING_ALGORITHM` (HS256, HS384, HS512), then delete `config/sessionSigning` and restart; time limits in one place each | ✅ |
+| 3 | Account lockout | `/api/auth/lockout/*` ([backend/routers/auth_lockout.py](./backend/routers/auth_lockout.py)), [lib/lockout.ts](./lib/lockout.ts) | 3 failures, progressive locks | Rules are constants in one module | ✅ |
+| 4 | Access control | `staff_access`, `require_roles`, IP allowlist checks ([backend/auth.py](./backend/auth.py)) | Roles, IP ranges | One module | ✅ |
+| 5 | Rate limiting | `limiter.limit(...)` ([backend/rate_limit.py](./backend/rate_limit.py)) | Per-IP limits (slowapi) | Replace the limiter in one module | ✅ |
+| 6 | Data encryption and key management | `EncryptionService`, `get_encryption_service()` ([backend/security/](./backend/security/)) | AES-256-GCM, versioned keys, 90-day rotation | New key version, or a new service class | ✅ |
+| 7 | Ballot receipts | `issue_receipt`, `receipt_hash` ([backend/receipts.py](./backend/receipts.py)) | Hash provider, `receipt` | `HASH_ALGORITHM_RECEIPT`; earlier receipts still verify | ✅ |
+| 8 | Audit log integrity | `write_audit`, chain verification ([backend/audit.py](./backend/audit.py)) | Hash chain, provider `audit` | `HASH_ALGORITHM_AUDIT`; each entry names its algorithm and the chain verifies across a change | ✅ |
+| 9 | Result integrity | `publish_results`, `GET /api/public/results`, the verify-package page | Fingerprint, provider `results` | `HASH_ALGORITHM_RESULTS` (sha256, sha384, sha512); the browser check follows the published algorithm | ✅ |
+| 10 | Authentication and MFA | Firebase Authentication; on the API, `verify_firebase_token` | Password and SMS one-time code | The API side is one function, but the sign-in pages and [lib/mfa.ts](./lib/mfa.ts) use the Firebase SDK directly | ⚠️ Partly: a new provider means rewriting the sign-in pages, not the voting logic |
+| 11 | Voter identity index (GovID) | [backend/routers/employee_voters.py](./backend/routers/employee_voters.py), [backend/routers/voter_registration.py](./backend/routers/voter_registration.py) | Staff path: SHA-256 called directly; self-registration: keyed hash from the encryption module | Both call sites must change | ❌ Not yet |
+
+**Result: 9 of 11 security subsystems (82%) can be replaced or upgraded through
+their interface alone.**
+
+### Hash algorithms
+
+[backend/security/hashing.py](./backend/security/hashing.py) is the one place
+that hashes for receipts, the audit log, result fingerprints and lookup IDs.
+Each purpose has its own setting in `backend/.env`, SHA-256 by default:
+
+```dotenv
+HASH_ALGORITHM_RECEIPT=sha256   # sha256, sha384, sha512, sha3_256, sha3_512
+HASH_ALGORITHM_AUDIT=sha256
+HASH_ALGORITHM_RESULTS=sha256   # sha256, sha384 or sha512: checked in browsers
+HASH_ALGORITHM_INDEX=sha256     # lockout records and audit-view throttling
+```
+
+A change applies to new values only. Stored values name their algorithm, and
+values from before had SHA-256, so existing receipts, audit entries and
+published results keep verifying. An unsupported setting stops the API at
+startup.
+
+Tests: `python -m pytest backend/tests/test_hashing.py backend/tests/test_tls_server.py backend/tests/test_sessions.py`
+cover switching each algorithm, verifying data made before the switch, and
+the shared TLS policy deciding which connections are accepted.
+
 ## Run the frontend
 
 Set the Firebase client configuration in `.env.local`, including:
@@ -11,14 +70,56 @@ NEXT_PUBLIC_FIREBASE_API_KEY=...
 NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=...
 NEXT_PUBLIC_FIREBASE_PROJECT_ID=...
 NEXT_PUBLIC_FIREBASE_APP_ID=...
-NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
+NEXT_PUBLIC_API_BASE_URL=https://127.0.0.1:8000
 ```
 
 Then run:
 
 ```powershell
 npm install
+npm run cert:dev   # once: creates the localhost certificate in certs/
 npm run dev
+```
+
+The site is served only at `https://localhost:3000`. For the browser to trust
+the certificate, install the [mkcert](https://github.com/FiloSottile/mkcert)
+development CA once (`mkcert -install`) before running `npm run cert:dev`; the
+script signs the certificate with that CA. Without it, the certificate is
+self-signed and the browser shows "Not secure". After installing the CA, run
+`npm run cert:dev -- --force` to replace an existing certificate.
+
+Do not use `next dev --experimental-https`: Next.js's built-in HTTPS server
+accepts TLS 1.2 and does not log rejected connections.
+
+### TLS 1.3 enforcement
+
+`npm run dev` and `npm start` run [server.mjs](./server.mjs) instead of the
+built-in Next.js server. Its listener ([server/secure-listener.mjs](./server/secure-listener.mjs))
+checks every connection before Next.js reads any request data:
+
+| Connection | Result | Logged reason |
+| --- | --- | --- |
+| Plain HTTP (first byte is not a TLS handshake record) | Closed | `notTls` |
+| No data sent within 10 seconds | Closed | `noClientHello` |
+| TLS 1.0 / 1.1, or any other failed handshake | Closed | `handshakeFailed` |
+| Negotiated TLS 1.2 | Closed after the handshake | `protocolBelowTls13` |
+| TLS 1.3 with a cipher not in the policy | Closed | `cipherNotAllowed` |
+| TLS 1.3 with an allowed cipher | Passed to Next.js | — |
+
+The minimum version and allowed ciphers come from
+[tls-policy.json](./tls-policy.json), shared with the API listener. Restart both
+servers after editing it; a missing or invalid file stops them starting.
+
+Rejections are printed to the console and appended as JSON lines to
+`logs/tls-security.log`. Override the defaults with `TLS_CERT_FILE`,
+`TLS_KEY_FILE`, `TLS_LOG_FILE`, `TLS_POLICY_FILE`, `HOST` and `PORT`.
+
+To check it by hand (Git Bash or any shell with OpenSSL and curl):
+
+```bash
+openssl s_client -connect localhost:3000 -tls1_3   # accepted: "Protocol: TLSv1.3"
+openssl s_client -connect localhost:3000 -tls1_2   # rejected: protocolBelowTls13
+curl http://localhost:3000                         # rejected: notTls
 ```
 
 ## Run the staff API
@@ -28,21 +129,30 @@ Install Python dependencies and configure `backend/.env` (do not commit credenti
 ```dotenv
 GOOGLE_APPLICATION_CREDENTIALS=C:\path\to\service-account.json
 FIREBASE_PROJECT_ID=a3-voting-system-dev
-ALLOWED_ORIGINS=http://localhost:3000
+ALLOWED_ORIGINS=https://localhost:3000
 ```
 
-Start the API from the repository root:
+Start the API from the repository root. It uses the same certificate as the
+frontend, so run `npm run cert:dev` first:
 
 ```powershell
 python -m pip install -r backend/requirements.txt
-python -m uvicorn backend.main:app --reload
+python -m backend.tls_server --reload
 ```
 
 If .env file is not detected:
 
 ```powershell
-python -m uvicorn backend.main:app --reload --env-file backend\.env
+python -m backend.tls_server --reload --env-file backend\.env
 ```
+
+The API is served only at `https://127.0.0.1:8000`.
+[backend/tls_server.py](./backend/tls_server.py) applies the same checks as
+the frontend listener (see [TLS 1.3 enforcement](#tls-13-enforcement)) before
+FastAPI reads any request data, and appends rejections to
+`logs/tls-security-api.log`. Do not start the API with plain `uvicorn`, which
+serves unencrypted HTTP. `TLS_CERT_FILE`, `TLS_KEY_FILE` and `TLS_LOG_FILE` in
+`backend/.env` override the defaults; `--host` and `--port` are also accepted.
 For local emulator use, set `FIRESTORE_EMULATOR_HOST` and
 `FIREBASE_AUTH_EMULATOR_HOST` in the API process environment and start the
 Firestore and Auth emulators with `firebase emulators:start --only firestore,auth`.
@@ -97,9 +207,9 @@ ARCHIVE_REQUIRED=true
 | `POST /api/voter/ballots` | Enrolled voter (Firebase token) | Records House and Senate ballots and returns a one-time receipt code |
 | `POST /api/admin/elections/{id}/results/publish` | Admin | Counts a finalised election, archives the package and receipt list for 7 years (R-06), then freezes the result package |
 | `POST /api/admin/elections/{id}/phase` with `{"to": "finalised"}` | Admin | Finalises only if voters marked voted, House ballots, Senate ballots and receipts all match (R-05); a mismatch is refused and logged |
-| `GET /api/public/results` | Anyone | Latest published results and their SHA-256 fingerprint |
+| `GET /api/public/results` | Anyone | Latest published results, their fingerprint and its hash algorithm (SHA-256 by default) |
 | `GET /api/public/results/package.json` | Anyone | Downloadable result package (the exact published bytes) |
-| `GET /api/public/results/receipts.txt` | Anyone (30 per minute) | Receipt list: the SHA-256 of every receipt code, sorted, one per line; its hash is `receiptsSha256` in the package |
+| `GET /api/public/results/receipts.txt` | Anyone (30 per minute) | Receipt list: the hash of every receipt code (its receipt ID), sorted, one per line; its fingerprint is `receiptsFingerprint` in the package |
 | `POST /api/public/receipts/verify` | Anyone (10 per minute) | Confirms a receipt's ballot was recorded, never its contents |
 
 ### Validate the three public pages from the frontend
@@ -122,7 +232,7 @@ real pages.
    `GOOGLE_APPLICATION_CREDENTIALS` must point to a service-account key for the
    project (Firebase console → Project settings → Service accounts → Generate
    new private key). Keep the key outside the repository and never commit it.
-3. Make sure `.env.local` contains `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`.
+3. Make sure `.env.local` contains `NEXT_PUBLIC_API_BASE_URL=https://127.0.0.1:8000`.
 
 #### 2. Seed a demo election
 
@@ -130,7 +240,8 @@ real pages.
 casts their ballots through the same code as `POST /api/voter/ballots`,
 finalises the election and publishes the results through the same code as the
 admin publish endpoint. It prints sample receipt codes and the published
-SHA-256 fingerprint; keep that output for the checks below.
+fingerprint with its algorithm (SHA-256 by default); keep that output for the
+checks below.
 
 By default it only writes to the Firestore emulator. To use the shared
 development project instead, add `--allow-live`. Tell the team first, because
@@ -160,11 +271,11 @@ The seed refuses to run while another election is `open`. Other options:
 #### 3. Start both servers
 
 ```powershell
-.venv\Scripts\python -m uvicorn backend.main:app --reload --env-file backend\.env
+.venv\Scripts\python -m backend.tls_server --reload --env-file backend\.env
 npm run dev
 ```
 
-`http://127.0.0.1:8000/health` should return `{"status":"ok"}`.
+`https://127.0.0.1:8000/health` should return `{"status":"ok"}`.
 
 #### 4. Published Results: `/results`
 
@@ -174,7 +285,7 @@ npm run dev
 | Open the page after publishing | Summary cards (status Final, ballots cast, turnout, published time), then one table per House division and Senate state |
 | Compare the "Published SHA-256 fingerprint" with the seed output | Identical |
 | Click "Download result package (JSON)" | A file named `result-package-<electionId>.json` downloads |
-| Click "Download receipt list (TXT)" | A file named `receipts-<electionId>.txt` downloads, one 64-character hash per line |
+| Click "Download receipt list (TXT)" | A file named `receipts-<electionId>.txt` downloads, one receipt hash per line (64 characters with the default SHA-256) |
 | Read the note above the download links | "…cannot be deleted or changed until <date 7 years after publishing>" |
 | Stop the API and reload the page | "Results Unavailable" |
 
@@ -246,13 +357,102 @@ Operational consequences to plan for:
   password is ever stored in Firestore. Rejecting a request deletes that sign-in account.
 - Deploy the two new composite indexes in [firestore.indexes.json](./firestore.indexes.json).
 
-## Authentication-code demo warning
+## Two-factor authentication
 
-The six-digit authentication code in `/verify` is a demo placeholder: any six
-digits are accepted. It does **not** provide real second-factor security and
-must not be used to protect a production account. Staff API protection instead
-uses Firebase ID-token verification, the server-side staff record and role,
-recent authentication, and the IP allowlist.
+Voters sign in with two factors: their **password** and a **one-time code sent
+by SMS** (Firebase phone multi-factor authentication).
+
+| Step | Page | What happens |
+| --- | --- | --- |
+| Enrol | `/mfa_setup` | After verifying their email, the voter adds a phone number and confirms it with a code, then logs in again |
+| Sign in | `/login` → `/verify` | The password is checked first; Firebase completes the sign-in only after the SMS code is accepted |
+| Time limit | `/verify` | The code must be entered within **60 seconds** of the password being accepted. A countdown is shown; when it reaches zero the pending login is discarded, the user is signed out and returned to `/login?reason=mfa-timeout` |
+| Voter pages | `/voter/*` | Each page checks that the Firebase ID token records a completed second factor (`sign_in_second_factor`). A session without one is signed out and sent to `/login?reason=mfa-required`. `/voter/help` holds no personal data and is open to all |
+
+The 60-second limit and the voter-page checks run in the browser; Firebase
+handles the code check itself. The API accepts ID tokens with up to 10 seconds
+of clock skew, so a server clock slightly behind Google's does not reject a
+token issued moments earlier.
+
+Firebase setup: SMS multi-factor authentication requires Firebase
+Authentication with Identity Platform, with SMS multi-factor enabled under
+Authentication → Sign-in method. For demos, add **test phone numbers** there:
+they never send an SMS and always accept their fixed code. Real numbers
+receive real messages, which need the Blaze plan and are charged per SMS.
+
+Staff API protection additionally uses Firebase ID-token verification, the
+server-side staff record and role, recent authentication, and the IP
+allowlist.
+
+## Account lockout
+
+Voter and staff accounts are locked after **3 consecutive failed sign-in
+attempts**: a wrong password on `/login` or a wrong SMS code on `/verify`.
+
+| Consecutive failures | Lock |
+| --- | --- |
+| 3 | 5 minutes |
+| 6 | 10 minutes |
+| 9 | 20 minutes |
+| 12 | 40 minutes |
+| 15 and every 3 after | 60 minutes (maximum) |
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/auth/lockout/check` | Before signing in: is this email locked, and for how long |
+| `POST /api/auth/lockout/failure` | Report a wrong password or SMS code; locks on every 3rd |
+| `POST /api/auth/lockout/success` | Reset the count; needs the new sign-in's Firebase ID token |
+
+- **Enforcement:** a lock disables the Firebase account, so Firebase refuses the
+  sign-in even if the login page is bypassed. The account is re-enabled by the
+  first check or report after the lock ends. Accounts that were already
+  disabled (for example staff awaiting approval, or staff deactivated during the
+  lock) stay disabled.
+- **IP-based rate limiting:** `check` allows 30 requests per minute per IP
+  address, `failure` and `success` 10. Over the limit, the login page asks the
+  user to wait a minute.
+- **No account discovery:** responses are the same whether or not an account
+  exists for the email. Lock records are keyed by a hash of the email (see
+  [firestore-schema.md](./firestore-schema.md#authlockoutsemailhash)).
+- **Audit:** every lock is written to the audit log as `auth.lockout`.
+- **Limitation:** failures are reported by the login and verify pages, because
+  sign-in itself happens between the browser and Firebase. Attempts made
+  directly against Firebase, bypassing these pages, are not counted; Firebase's
+  own throttling (`auth/too-many-requests`) still applies to them.
+
+## Inactivity timeout
+
+Voter and staff sessions end after **2 minutes of inactivity**, enforced in the
+browser and on the server.
+
+| Where | What happens |
+| --- | --- |
+| Browser ([components/inactivityguard.tsx](./components/inactivityguard.tsx)) | On every `/voter` and `/staff` page, clicks, typing, scrolling and pointer movement count as activity, shared across open tabs. After 1:30 a warning ("Are you still there?") counts down; at 2:00 the user is signed out and sent to `/login?reason=session-timeout` |
+| API ([backend/sessions.py](./backend/sessions.py)) | Every signed-in endpoint requires an `X-Session-Token`: a JWT signed by the API that expires 2.5 minutes after it was issued and is renewed while the user is active. An expired token is refused, and a sweep every 30 seconds ends sessions nobody renewed |
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/session/start` | Exchange a Firebase ID token for a session token. Allowed only within 5 minutes of signing in, so an ended session cannot be replaced without signing in again |
+| `POST /api/session/renew` | Extend the session; called at most every 30 seconds while the user is active |
+| `POST /api/session/end` | Close the session on sign-out |
+
+- **Ending an idle session** revokes the user's Firebase refresh tokens, so the
+  API rejects their existing ID tokens and Firebase stops issuing new ones. This
+  signs the user out on all their devices. Each timeout is audited as
+  `auth.sessionTimeout`.
+- **Why 2.5 minutes on the server:** the browser renews at most every 30
+  seconds, so the server's record of activity can be up to 30 seconds old. The
+  browser always ends the session first; the server guarantees it ends.
+- **Signing key:** generated automatically the first time the API needs it and
+  stored in Firestore at `config/sessionSigning`, which only the API can read.
+  There is nothing to configure, and restarts keep sessions valid. To replace
+  the key, delete that document and restart the API; every session then ends.
+  `SESSION_IDLE_SECONDS` in `backend/.env` (default `150`) sets the server limit.
+- **Limitation:** voter pages read Firestore directly. Firestore cannot check
+  the session, so a tampered page could still read the voter's own data until
+  their current Firebase ID token expires (at most 1 hour after the session
+  ended). The voter registration endpoint uses its own sign-in check and does
+  not require a session.
 
 ## Data and security notes
 

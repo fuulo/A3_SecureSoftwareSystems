@@ -132,8 +132,8 @@ def test_tallies_count_every_ballot_once_per_contest():
 def test_package_bytes_are_deterministic():
     published = datetime(2028, 5, 1, 9, 0, tzinfo=timezone.utc)
     package = build_package("e1", {"name": "Test"}, [], enrolled=10, ballots_cast=4, senate_ballots_cast=4,
-                            voters_marked_voted=4, receipts_issued=4, receipts_sha256="0" * 64,
-                            published_at=published)
+                            voters_marked_voted=4, receipts_issued=4, receipts_fingerprint="0" * 64,
+                            receipts_hash_algorithm="sha256", published_at=published)
 
     assert package_bytes(package) == package_bytes(json.loads(package_bytes(package)))
     assert package["election"]["publishedAt"] == "2028-05-01T19:00:00+10:00"

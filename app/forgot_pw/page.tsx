@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useLayoutEffect, useState } from "react";
 import Link from "next/link";
 import { sendPasswordResetEmail } from "firebase/auth";
 import { auth } from "../../lib/firebase";
@@ -17,6 +17,20 @@ export default function ForgotPasswordPage() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Once the request is sent, only the confirmation and "Back to Login" remain
+  const [isSent, setIsSent] = useState(false);
+
+  // Next.js keeps this page mounted but hidden after navigating away
+  // (cacheComponents), so start with the form again on every visit
+  useLayoutEffect(() => {
+    return () => {
+      setEmail("");
+      setError("");
+      setMessage("");
+      setIsSubmitting(false);
+      setIsSent(false);
+    };
+  }, []);
 
   useEffect(() => {
     function resetPage() {
@@ -24,6 +38,7 @@ export default function ForgotPasswordPage() {
       setError("");
       setMessage("");
       setIsSubmitting(false);
+      setIsSent(false);
     }
 
     window.addEventListener("pageshow", resetPage);
@@ -61,9 +76,10 @@ export default function ForgotPasswordPage() {
       // Use the same message for all outcomes so the page does not reveal
       // whether a particular email address is registered.
       setMessage(
-        "If an account exists for this email address, password-reset instructions have been sent."
+        "If an account exists for this email address, password-reset instructions will be sent."
       );
     } finally {
+      setIsSent(true);
       setIsSubmitting(false);
     }
   }
@@ -75,71 +91,79 @@ export default function ForgotPasswordPage() {
           Forgot Your Password?
         </h1>
 
-        <p className="mb-6 text-center">
-          Enter the email address associated with your account. If an account
-          exists, password-reset instructions will be sent to that address.
-        </p>
-
-        <form onSubmit={handleRequest} noValidate className="space-y-5">
-          <div>
-            <label
-              htmlFor="email"
-              className="mb-1 block font-semibold"
-            >
-              Email address
-            </label>
-
-            <input
-              id="email"
-              name="email"
-              type="email"
-              autoComplete="email"
-              required
-              value={email}
-              onChange={(event) => {
-                setEmail(event.target.value);
-                setError("");
-                setMessage("");
-              }}
-              aria-invalid={error ? true : undefined}
-              aria-describedby={error ? "reset-error" : undefined}
-              className={inputStyle}
-            />
-          </div>
-
-          {error && (
-            <p
-              id="reset-error"
-              role="alert"
-              className="rounded border border-red-300 bg-red-50 px-3 py-2 text-[13px] text-red-700"
-            >
-              {error}
-            </p>
-          )}
-
-          {message && (
+        {isSent ? (
+          <div className="mt-6 space-y-5">
             <p
               role="status"
               className="rounded border border-green-300 bg-green-50 px-3 py-2 text-[13px] text-green-800"
             >
               {message}
             </p>
-          )}
 
-          <button
-            type="submit"
-            disabled={isSubmitting}
-            className={`${buttonStyle} disabled:cursor-not-allowed disabled:opacity-60`}
-          >
-            {isSubmitting ? "Sending instructions..." : "Send reset instructions"}
-          </button>
-        </form>
+            <Link href="/login" className={`${buttonStyle} block text-center`}>
+              Back to Login
+            </Link>
+          </div>
+        ) : (
+          <>
+            <p className="mb-6 text-center">
+              Enter the email address associated with your account. If an account
+              exists, password-reset instructions will be sent to that address.
+            </p>
 
-        <div className="mt-6 flex justify-center">
-          <Link href="/login" className={linkStyle}>
-            Back to login
-          </Link>
-        </div>
+            <form onSubmit={handleRequest} noValidate className="space-y-5">
+              <div>
+                <label
+                  htmlFor="email"
+                  className="mb-1 block font-semibold"
+                >
+                  Email address
+                </label>
+
+                <input
+                  id="email"
+                  name="email"
+                  type="email"
+                  autoComplete="email"
+                  required
+                  value={email}
+                  onChange={(event) => {
+                    setEmail(event.target.value);
+                    setError("");
+                    setMessage("");
+                  }}
+                  aria-invalid={error ? true : undefined}
+                  aria-describedby={error ? "reset-error" : undefined}
+                  className={inputStyle}
+                />
+              </div>
+
+              {error && (
+                <p
+                  id="reset-error"
+                  role="alert"
+                  className="rounded border border-red-300 bg-red-50 px-3 py-2 text-[13px] text-red-700"
+                >
+                  {error}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className={`${buttonStyle} disabled:cursor-not-allowed disabled:opacity-60`}
+              >
+                {isSubmitting ? "Sending instructions..." : "Send reset instructions"}
+              </button>
+            </form>
+
+            <div className="mt-6 flex justify-center">
+              <Link href="/login" className={linkStyle}>
+                Back to login
+              </Link>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

@@ -19,6 +19,7 @@ from backend import archive, audit, receipts, reconciliation, results
 from backend.main import app
 from backend.rate_limit import limiter
 from backend.routers import public_results
+from backend.security import hashing
 from backend.tests.fake_firestore import FakeDb, fake_transactional
 
 PUBLISHED = datetime(2028, 5, 1, 9, 0, tzinfo=timezone.utc)
@@ -98,7 +99,8 @@ def test_files_are_locked_for_at_least_seven_years(bucket):
     assert retain_until >= PUBLISHED.replace(year=PUBLISHED.year + 7)
     assert record["retainUntil"] == PUBLISHED + timedelta(days=archive.RETENTION_DAYS)
     assert record["files"] == [{"name": "elections/e1/a.json", "fileId": "file1",
-                                "sha256": hashlib.sha256(b"{}").hexdigest(), "size": 2}]
+                                "fingerprint": hashlib.sha256(b"{}").hexdigest(), "hashAlgorithm": "sha256",
+                                "size": 2}]
 
 
 def test_missing_archive_settings_refuse_publication(bucket, monkeypatch):
@@ -148,17 +150,32 @@ def test_publishing_archives_the_package_and_receipt_list(db, bucket):
 
     package = json.loads(published["packageJson"])
     receipt_list = receipts.receipt_list("e1")
-    receipts_sha256 = hashlib.sha256(receipt_list).hexdigest()
+    receipts_fingerprint = hashlib.sha256(receipt_list).hexdigest()
     assert package["packageVersion"] == 4
-    assert package["election"]["receiptsSha256"] == receipts_sha256 == published["receiptsSha256"]
+    assert package["election"]["receiptsFingerprint"] == receipts_fingerprint == published["receiptsFingerprint"]
+    assert package["election"]["receiptsHashAlgorithm"] == "sha256"
     assert {(u["name"], u["data"]) for u in bucket.uploads} == {
-        (f"elections/e1/result-package-{out['sha256']}.json", published["packageJson"].encode("utf-8")),
-        (f"elections/e1/receipts-{receipts_sha256}.txt", receipt_list),
+        (f"elections/e1/result-package-{out['fingerprint']}.json", published["packageJson"].encode("utf-8")),
+        (f"elections/e1/receipts-{receipts_fingerprint}.txt", receipt_list),
     }
     assert published["archive"]["bucket"] == "voting-test"
     assert [f["name"] for f in published["archive"]["files"]] == [u["name"] for u in bucket.uploads]
     [entry] = [d for p, d in db.store.items() if p.startswith("auditLogs/")]
     assert entry["action"] == "results.publish" and entry["after"]["archive"]["retentionMode"] == "compliance"
+
+
+def test_receipt_list_and_archive_follow_the_configured_results_algorithm(db, bucket, monkeypatch):
+    monkeypatch.setitem(hashing.HASH_ALGORITHMS, "results", "sha384")
+
+    out, published = _publish(db)
+
+    election = json.loads(published["packageJson"])["election"]
+    receipts_fingerprint = hashlib.sha384(receipts.receipt_list("e1")).hexdigest()
+    assert out["hashAlgorithm"] == "sha384"
+    assert election["receiptsHashAlgorithm"] == "sha384"
+    assert election["receiptsFingerprint"] == receipts_fingerprint
+    assert {f["hashAlgorithm"] for f in published["archive"]["files"]} == {"sha384"}
+    assert f"elections/e1/receipts-{receipts_fingerprint}.txt" in [u["name"] for u in bucket.uploads]
 
 
 def test_nothing_is_published_when_archiving_fails(db, bucket):
@@ -179,6 +196,6 @@ def test_public_receipt_list_matches_the_published_package(db, bucket):
     download = client.get("/api/public/results/receipts.txt")
 
     assert download.status_code == 200
-    assert hashlib.sha256(download.content).hexdigest() == summary["package"]["election"]["receiptsSha256"]
+    assert hashlib.sha256(download.content).hexdigest() == summary["package"]["election"]["receiptsFingerprint"]
     assert 'filename="receipts-e1.txt"' in download.headers["content-disposition"]
     assert summary["archive"]["files"][0]["name"].startswith("elections/e1/")

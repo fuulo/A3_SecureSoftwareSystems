@@ -5,6 +5,7 @@ import Link from "next/link";
 import { mainHeader, subHeader } from "../../components/styles";
 import {
   fetchPublishedResults,
+  fingerprintAlgorithm,
   formatDateTime,
   formatNumber,
   formatPercent,
@@ -137,6 +138,7 @@ export default function ResultsPage() {
   }
 
   const { election, contests } = results.package;
+  const fingerprintLabel = fingerprintAlgorithm(results.algorithm)?.label ?? results.algorithm;
 
   const summary = [
     { label: "Status", value: election.status },
@@ -181,15 +183,15 @@ export default function ResultsPage() {
             &#9654; Download the result package to keep an independent copy of these results
           </p>
           <p className="mb-3 pl-4">
-            &#9654; Compare its SHA-256 fingerprint with the one published below
+            &#9654; Compare its {fingerprintLabel} fingerprint with the one published below
           </p>
           <p className="mb-3 pl-4">
             &#9654; Use “Verify result package” to check it automatically
           </p>
 
           <div className="mt-4 rounded-lg border border-slate-300 bg-slate-50 p-4">
-            <p className="mb-1 text-[13px] font-semibold">Published SHA-256 fingerprint</p>
-            <p className="break-all font-mono text-[13px]">{results.sha256}</p>
+            <p className="mb-1 text-[13px] font-semibold">Published {fingerprintLabel} fingerprint</p>
+            <p className="break-all font-mono text-[13px]">{results.fingerprint}</p>
           </div>
 
           {results.archive && (
@@ -208,7 +210,7 @@ export default function ResultsPage() {
             >
               Download result package (JSON)
             </a>
-            {results.package.election.receiptsSha256 && (
+            {results.package.election.receiptsFingerprint && (
               <a
                 href={receiptListUrl()}
                 download

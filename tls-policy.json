@@ -1,0 +1,9 @@
+{
+  "description": "TLS policy for both listeners: the frontend (server/secure-listener.mjs) and the API (backend/tls_server.py). Connections below minimumVersion, or using a cipher not listed, are rejected and logged before any request data is read. Restart both servers after changing this file.",
+  "minimumVersion": "TLSv1.3",
+  "allowedCiphers": [
+    "TLS_AES_256_GCM_SHA384",
+    "TLS_CHACHA20_POLY1305_SHA256",
+    "TLS_AES_128_GCM_SHA256"
+  ]
+}

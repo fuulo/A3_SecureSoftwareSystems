@@ -11,6 +11,10 @@ import {
   getDoc,
 } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
+import {
+  MFA_REQUIRED_REASON,
+  requireSecondFactor,
+} from "@/lib/mfa";
 import { mainHeader } from "@/components/styles";
 
 type UserProfile = {
@@ -40,6 +44,12 @@ export default function VoterProfilePage() {
       async (currentUser) => {
         if (!currentUser) {
           router.replace("/login");
+          return;
+        }
+
+        // Both factors (password and text message code) are required
+        if (!(await requireSecondFactor(currentUser))) {
+          router.replace(`/login?reason=${MFA_REQUIRED_REASON}`);
           return;
         }
 

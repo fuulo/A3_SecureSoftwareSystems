@@ -1,12 +1,12 @@
 """Builds and publishes the official result package for a finalised election.
 
-The package is frozen as exact JSON bytes when published. Its SHA-256
-fingerprint is stored next to it and written into the audit hash chain, so a
-downloaded copy can be checked against the fingerprint on the results page.
-The package and the receipt list are also archived, locked for 7 years
-(``backend.archive``), before anything is published.
+The package is frozen as exact JSON bytes when published. Its fingerprint (the
+"results" algorithm in backend/security/hashing.py, SHA-256 by default) is
+stored next to it with the algorithm's name and written into the audit hash
+chain, so a downloaded copy can be checked against the fingerprint on the
+results page. The package and the receipt list are also archived, locked for
+7 years (``backend.archive``), before anything is published.
 """
-import hashlib
 import json
 import logging
 from collections import Counter, defaultdict
@@ -22,6 +22,7 @@ from backend.audit import write_audit
 from backend.firestore_client import db
 from backend.receipts import receipt_list
 from backend.reconciliation import require_reconciled
+from backend.security import hashing
 
 logger = logging.getLogger(__name__)
 PACKAGE_VERSION = 4
@@ -133,7 +134,8 @@ def tally_senate(regions: Docs, groups: Docs, candidates: Docs, parties: Docs,
 
 def build_package(election_id: str, election: dict[str, Any], contests: list[dict[str, Any]], *,
                   enrolled: int, ballots_cast: int, senate_ballots_cast: int, voters_marked_voted: int,
-                  receipts_issued: int, receipts_sha256: str, published_at: datetime) -> dict[str, Any]:
+                  receipts_issued: int, receipts_fingerprint: str, receipts_hash_algorithm: str,
+                  published_at: datetime) -> dict[str, Any]:
     try:
         local = ZoneInfo(election.get("timezone") or "Australia/Melbourne")
     except Exception:
@@ -151,8 +153,10 @@ def build_package(election_id: str, election: dict[str, Any], contests: list[dic
             "senateBallotsCast": senate_ballots_cast,
             "votersMarkedVoted": voters_marked_voted,
             "receiptsIssued": receipts_issued,
-            # SHA-256 of the published receipt list (see backend.receipts.receipt_list).
-            "receiptsSha256": receipts_sha256,
+            # Fingerprint of the published receipt list (see backend.receipts.receipt_list),
+            # made with the "results" algorithm so browsers can check it.
+            "receiptsFingerprint": receipts_fingerprint,
+            "receiptsHashAlgorithm": receipts_hash_algorithm,
         },
         "contests": contests,
     }
@@ -198,7 +202,7 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
     receipts = receipt_list(election_id)
     if receipts.count(b"\n") != reconciliation["receiptsIssued"]:
         raise HTTPException(status_code=409, detail="Receipts changed while publishing; please try again")
-    receipts_sha256 = hashlib.sha256(receipts).hexdigest()
+    receipts_algorithm, receipts_fingerprint = hashing.digest("results", receipts)
     published_at = datetime.now(timezone.utc)
     package = build_package(
         election_id, election, contests,
@@ -207,15 +211,18 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
         senate_ballots_cast=len(senate_ballots),
         voters_marked_voted=reconciliation["votersMarkedVoted"],
         receipts_issued=reconciliation["receiptsIssued"],
-        receipts_sha256=receipts_sha256,
+        receipts_fingerprint=receipts_fingerprint,
+        receipts_hash_algorithm=receipts_algorithm,
         published_at=published_at,
     )
     content = package_bytes(package)
-    sha256 = hashlib.sha256(content).hexdigest()
+    algorithm, fingerprint = hashing.digest("results", content)
+    # Kept beside the named fingerprint for readers that expect it
+    legacy_field = {"sha256": fingerprint} if algorithm == "sha256" else {}
     # Archived before anything is published, so results never go out without their 7-year copy.
     archive = archive_election(election_id, {
-        f"result-package-{sha256}.json": (content, "application/json"),
-        f"receipts-{receipts_sha256}.txt": (receipts, "text/plain"),
+        f"result-package-{fingerprint}.json": (content, "application/json"),
+        f"receipts-{receipts_fingerprint}.txt": (receipts, "text/plain"),
     }, published_at)
     transaction = db.transaction()
 
@@ -228,15 +235,18 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
         write_audit(tx, actor=actor, action="results.publish", category="export",
                     target_type="election", target_id=election_id, target_path=published_ref.path,
                     before=None,
-                    after={"sha256": sha256, "ballotsCast": len(house_ballots),
-                           "receiptsSha256": receipts_sha256, "archive": archive},
+                    after={"fingerprint": fingerprint, "hashAlgorithm": algorithm,
+                           "ballotsCast": len(house_ballots),
+                           "receiptsFingerprint": receipts_fingerprint, "archive": archive},
                     outcome="success", reason=None if archive else "archive_not_configured",
                     request=request, election_id=election_id)
         tx.create(published_ref, {
             "electionId": election_id,
             "packageJson": content.decode("utf-8"),
-            "sha256": sha256,
-            "receiptsSha256": receipts_sha256,
+            "fingerprint": fingerprint,
+            "hashAlgorithm": algorithm,
+            **legacy_field,
+            "receiptsFingerprint": receipts_fingerprint,
             "archive": archive,
             "publishedAt": published_at,
             "publishedBy": actor.get("staffId"),
@@ -249,4 +259,4 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
     except Exception as exc:
         logger.exception("Result publication failed")
         raise HTTPException(status_code=400, detail="Unable to publish results") from exc
-    return {"electionId": election_id, "sha256": sha256}
+    return {"electionId": election_id, "fingerprint": fingerprint, "hashAlgorithm": algorithm, **legacy_field}

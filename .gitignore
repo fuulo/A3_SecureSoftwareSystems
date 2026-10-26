@@ -28,6 +28,8 @@ __pycache__/
 # misc
 .DS_Store
 *.pem
+/certs/
+/logs/
 
 # debug
 npm-debug.log*
@@ -44,3 +46,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+.vscode/
+backend/firebase-service-account.json

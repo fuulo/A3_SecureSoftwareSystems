@@ -4,10 +4,14 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { mainHeader } from "../../components/styles";
 import {
+  algorithmForFingerprint,
   fetchPublishedResults,
+  fingerprintAlgorithm,
+  FINGERPRINT_ALGORITHMS,
   formatNumber,
   receiptListUrl,
   resultPackageUrl,
+  type FingerprintAlgorithm,
 } from "../../lib/results";
 import { RECEIPT_ALPHABET, RECEIPT_LENGTH } from "../../lib/receipts";
 
@@ -31,8 +35,8 @@ type Outcome = {
 };
 
 // Hashes the file in the browser. The file is never uploaded anywhere.
-async function sha256Hex(buffer: BufferSource) {
-  const digest = await crypto.subtle.digest("SHA-256", buffer);
+async function fingerprintHex(buffer: BufferSource, algorithm: FingerprintAlgorithm) {
+  const digest = await crypto.subtle.digest(algorithm.label, buffer);
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
@@ -167,12 +171,18 @@ function normalizeReceipt(code: string) {
   return code.replace(/[\s-]/g, "").toUpperCase();
 }
 
+// A receipt's ID in the list for one algorithm: plain hex for SHA-256, the
+// original algorithm, otherwise "<algorithm>-<hex>" (backend/security/hashing.py)
+async function receiptId(code: string, algorithm: FingerprintAlgorithm) {
+  const hex = await fingerprintHex(new TextEncoder().encode(code), algorithm);
+  return algorithm.name === "sha256" ? hex : `${algorithm.name}-${hex}`;
+}
+
 // Checks a downloaded receipt list against the package and, if given, one receipt code.
-// The list holds the SHA-256 of every receipt code, sorted, one per line.
+// The list holds the ID (a hash) of every receipt code, sorted, one per line.
 async function checkReceiptList(
   packageText: string,
-  listText: string,
-  listHash: string,
+  listBuffer: ArrayBuffer,
   code: string
 ): Promise<Check[]> {
   let election: unknown;
@@ -183,27 +193,38 @@ async function checkReceiptList(
     election = undefined;
   }
   const expected =
-    isRecord(election) && typeof election.receiptsSha256 === "string"
-      ? election.receiptsSha256
+    isRecord(election) && typeof election.receiptsFingerprint === "string"
+      ? election.receiptsFingerprint
       : null;
+  // The package names the algorithm; older readers can tell it from the length
+  const listAlgorithm =
+    expected === null
+      ? undefined
+      : (isRecord(election) && typeof election.receiptsHashAlgorithm === "string"
+          ? fingerprintAlgorithm(election.receiptsHashAlgorithm)
+          : undefined) ?? algorithmForFingerprint(expected);
+  const listHash = listAlgorithm ? await fingerprintHex(listBuffer, listAlgorithm) : null;
   const issued =
     isRecord(election) && isCount(election.receiptsIssued) ? election.receiptsIssued : null;
+  const listText = new TextDecoder().decode(listBuffer);
   const lines = listText.endsWith("\n") ? listText.slice(0, -1).split("\n") : listText.split("\n");
   const hashes = listText === "" ? [] : lines;
   const ordered = hashes.every(
-    (line, i) => /^[0-9a-f]{64}$/.test(line) && (i === 0 || hashes[i - 1] < line)
+    (line, i) => /^(?:[a-z0-9_]+-)?[0-9a-f]+$/.test(line) && (i === 0 || hashes[i - 1] < line)
   );
 
   const checks: Check[] = [
     {
       label: "Receipt list matches the package",
-      passed: expected !== null && listHash === expected,
+      passed: listHash !== null && listHash === expected,
       detail:
         expected === null
           ? "This package has no receipt list fingerprint. It was published before receipt lists were added."
-          : listHash === expected
-            ? "The receipt list is identical to the one published with these results."
-            : "The receipt list differs from the published one. It may have been changed.",
+          : listHash === null
+            ? "The package's receipt list fingerprint uses an algorithm this page cannot check."
+            : listHash === expected
+              ? "The receipt list is identical to the one published with these results."
+              : "The receipt list differs from the published one. It may have been changed.",
     },
     {
       label: "Every receipt listed once",
@@ -215,14 +236,30 @@ async function checkReceiptList(
   ];
 
   if (code) {
-    const receiptHash = await sha256Hex(new TextEncoder().encode(code));
-    const found = hashes.includes(receiptHash);
+    // Try every algorithm a browser can calculate, since receipts issued before
+    // an algorithm upgrade keep their original IDs
+    const listed = new Set(hashes);
+    const candidates = await Promise.all(
+      FINGERPRINT_ALGORITHMS.map((algorithm) => receiptId(code, algorithm))
+    );
+    const found = candidates.some((id) => listed.has(id));
+    // IDs from algorithms browsers lack (such as SHA-3) cannot be checked here
+    const browserNames = new Set<string>(FINGERPRINT_ALGORITHMS.map((a) => a.name));
+    const unchecked = [
+      ...new Set(
+        hashes
+          .map((line) => (line.includes("-") ? line.split("-")[0] : "sha256"))
+          .filter((name) => !browserNames.has(name))
+      ),
+    ];
     checks.push({
       label: "Your receipt is in the list",
       passed: found,
       detail: found
         ? "Your ballot is among the published receipts. Your code was not sent anywhere."
-        : "This receipt code is not in the list. Check the code and try again.",
+        : unchecked.length > 0
+          ? `Your receipt was not found, but some receipts use ${unchecked.join(", ")}, which browsers cannot calculate. Use "Verify receipt" instead.`
+          : "This receipt code is not in the list. Check the code and try again.",
     });
   }
 
@@ -236,6 +273,8 @@ export default function VerifyPackagePage() {
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [receiptCode, setReceiptCode] = useState("");
   const [expectedHash, setExpectedHash] = useState("");
+  // Name of the published fingerprint's algorithm, for the field label
+  const [publishedLabel, setPublishedLabel] = useState("");
   const [hashNotice, setHashNotice] = useState("Loading the published fingerprint...");
   const [error, setError] = useState("");
   const [outcome, setOutcome] = useState<Outcome | null>(null);
@@ -251,8 +290,9 @@ export default function VerifyPackagePage() {
           setHashNotice("No results have been published yet.");
           return;
         }
-        publishedHash.current = published.sha256;
-        setExpectedHash((current) => current || published.sha256);
+        publishedHash.current = published.fingerprint;
+        setExpectedHash((current) => current || published.fingerprint);
+        setPublishedLabel(fingerprintAlgorithm(published.algorithm)?.label ?? published.algorithm);
         setHashNotice("");
       })
       .catch(() => {
@@ -301,8 +341,11 @@ export default function VerifyPackagePage() {
       setError(`The file is too large. Result packages are smaller than ${MAX_FILE_MB} MB.`);
       return;
     }
-    if (!/^[0-9a-f]{64}$/.test(expected)) {
-      setError("The expected fingerprint must be 64 characters (0-9 and a-f).");
+    // The fingerprint's length shows which algorithm made it
+    const algorithm = /^[0-9a-f]+$/.test(expected) ? algorithmForFingerprint(expected) : undefined;
+    if (!algorithm) {
+      const lengths = FINGERPRINT_ALGORITHMS.map((a) => a.hexLength).join(", ");
+      setError(`The expected fingerprint must be ${lengths} characters long (0-9 and a-f).`);
       return;
     }
     const code = normalizeReceipt(receiptCode);
@@ -327,17 +370,11 @@ export default function VerifyPackagePage() {
 
     try {
       const buffer = await file.arrayBuffer();
-      const computedHash = await sha256Hex(buffer);
+      const computedHash = await fingerprintHex(buffer, algorithm);
       const text = new TextDecoder().decode(buffer);
       let receiptChecks: Check[] = [];
       if (receiptFile) {
-        const listBuffer = await receiptFile.arrayBuffer();
-        receiptChecks = await checkReceiptList(
-          text,
-          new TextDecoder().decode(listBuffer),
-          await sha256Hex(listBuffer),
-          code
-        );
+        receiptChecks = await checkReceiptList(text, await receiptFile.arrayBuffer(), code);
       }
 
       setOutcome({
@@ -404,7 +441,7 @@ export default function VerifyPackagePage() {
 
           <div>
             <label htmlFor="expected" className="mb-1 block font-semibold text-[18px]">
-              Expected SHA-256 fingerprint
+              Expected {publishedLabel ? `${publishedLabel} ` : ""}fingerprint
             </label>
             <input
               id="expected"

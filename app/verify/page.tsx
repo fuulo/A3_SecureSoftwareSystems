@@ -1,30 +1,39 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   PhoneAuthProvider,
   PhoneMultiFactorGenerator,
-  RecaptchaVerifier,
+  signOut,
   type PhoneMultiFactorInfo,
 } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import { ApiError } from "@/lib/api";
 import { getDashboardPath } from "@/lib/dashboard";
 import {
+  ACCOUNT_LOCKED_REASON,
+  createInvisibleRecaptcha,
   getMfaErrorMessage,
   getPendingMfa,
+  getPendingMfaDeadline,
+  getPendingMfaEmail,
+  MFA_TIME_LIMIT_SECONDS,
+  MFA_TIMEOUT_REASON,
   setPendingMfa,
+  type InvisibleRecaptcha,
 } from "@/lib/mfa";
+import { attemptsLeftMessage, reportFailedSignIn, reportSuccessfulSignIn } from "@/lib/lockout";
 import { mainHeader, buttonStyle } from "@/components/styles";
 
 const CODE_LENGTH = 6;
-const RESEND_SECONDS = 60;
+// Shorter than the time limit, so a new code can still be requested in time
+const RESEND_SECONDS = 30;
 
 const inputStyle =
   "w-full rounded border border-slate-400 px-3 py-2 text-center text-[28px] font-semibold tracking-[0.4em] focus:outline-none focus:ring-2 focus:ring-[#1f538d]";
 
-const linkStyle = "text-[13px] text-[#1b4779] hover:underline";
+const linkStyle = "text-[16px] text-[#1b4779] hover:underline";
 
 type Step = "send" | "code";
 
@@ -41,8 +50,17 @@ export default function AuthenticationCodePage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isVerified, setIsVerified] = useState(false);
   const [secondsLeft, setSecondsLeft] = useState(0);
+  const [secondsToExpiry, setSecondsToExpiry] = useState(MFA_TIME_LIMIT_SECONDS);
 
-  const recaptchaRef = useRef<RecaptchaVerifier | null>(null);
+  const recaptchaRef = useRef<InvisibleRecaptcha | null>(null);
+  const recaptchaHostRef = useRef<HTMLDivElement>(null);
+
+  // Ends the login attempt when the time limit has passed
+  const expireLogin = useCallback(() => {
+    setPendingMfa(null);
+    signOut(auth).catch(() => {});
+    router.replace(`/login?reason=${MFA_TIMEOUT_REASON}`);
+  }, [router]);
 
   // If no first-step login is waiting (for example after a refresh),
   // go back to the login page
@@ -52,6 +70,24 @@ export default function AuthenticationCodePage() {
     }
   }, [router]);
 
+  // Count down to the time limit. A code that is being checked, or has been
+  // accepted, is allowed to finish.
+  useEffect(() => {
+    const deadline = getPendingMfaDeadline();
+    if (deadline === null || isSubmitting || isVerified) return;
+
+    const timer = setInterval(() => {
+      const remaining = Math.ceil((deadline - Date.now()) / 1000);
+      if (remaining <= 0) {
+        clearInterval(timer);
+        expireLogin();
+      } else {
+        setSecondsToExpiry(remaining);
+      }
+    }, 250);
+    return () => clearInterval(timer);
+  }, [isSubmitting, isVerified, expireLogin]);
+
   // Count down for the "Send a new code" button
   useEffect(() => {
     if (secondsLeft <= 0) return;
@@ -60,10 +96,28 @@ export default function AuthenticationCodePage() {
     return () => clearTimeout(timer);
   }, [secondsLeft]);
 
+  // Next.js keeps this page mounted but hidden after navigating away
+  // (cacheComponents), so clear the code and start over on every visit
+  useLayoutEffect(() => {
+    return () => {
+      setStep("send");
+      setCode("");
+      setVerificationId("");
+      setMaskedPhone("");
+      setError("");
+      setMessage("");
+      setIsSending(false);
+      setIsSubmitting(false);
+      setIsVerified(false);
+      setSecondsLeft(0);
+      setSecondsToExpiry(MFA_TIME_LIMIT_SECONDS);
+    };
+  }, []);
+
   // Remove the reCAPTCHA when leaving the page
   useEffect(() => {
     return () => {
-      recaptchaRef.current?.clear();
+      recaptchaRef.current?.dispose();
       recaptchaRef.current = null;
     };
   }, []);
@@ -101,14 +155,12 @@ export default function AuthenticationCodePage() {
     setIsSending(true);
 
     try {
-      const recaptcha = new RecaptchaVerifier(auth, "recaptcha-container", {
-        size: "invisible",
-      });
+      const recaptcha = createInvisibleRecaptcha(recaptchaHostRef.current);
       recaptchaRef.current = recaptcha;
 
       const id = await new PhoneAuthProvider(auth).verifyPhoneNumber(
         { multiFactorHint: hint, session: resolver.session },
-        recaptcha
+        recaptcha.verifier
       );
 
       setVerificationId(id);
@@ -118,10 +170,11 @@ export default function AuthenticationCodePage() {
       setSecondsLeft(RESEND_SECONDS);
       setMessage("A code has been sent by text message.");
     } catch (firebaseError) {
+      console.error("Sending the verification code failed:", firebaseError);
       setError(getMfaErrorMessage(firebaseError));
     } finally {
       // A reCAPTCHA token works only once, so start fresh next time
-      recaptchaRef.current?.clear();
+      recaptchaRef.current?.dispose();
       recaptchaRef.current = null;
       setIsSending(false);
     }
@@ -145,6 +198,12 @@ export default function AuthenticationCodePage() {
         return;
       }
 
+      const deadline = getPendingMfaDeadline();
+      if (deadline === null || Date.now() >= deadline) {
+        expireLogin();
+        return;
+      }
+
       if (code.length !== CODE_LENGTH) {
         setError(`Please enter the ${CODE_LENGTH}-digit authentication code.`);
         return;
@@ -159,11 +218,32 @@ export default function AuthenticationCodePage() {
         // Firebase completes the sign-in only now, after the second step
         await resolver.resolveSignIn(assertion);
       } catch (firebaseError) {
-        setError(getMfaErrorMessage(firebaseError));
+        const failure = getMfaErrorMessage(firebaseError);
+
+        // A wrong code counts towards locking the account
+        if ((firebaseError as { code?: string }).code === "auth/invalid-verification-code") {
+          try {
+            const lockout = await reportFailedSignIn(getPendingMfaEmail());
+            if (lockout.locked) {
+              setPendingMfa(null);
+              signOut(auth).catch(() => {});
+              router.replace(`/login?reason=${ACCOUNT_LOCKED_REASON}`);
+              return;
+            }
+            setError(`${failure} ${attemptsLeftMessage(lockout)}`);
+          } catch (reportError) {
+            console.error("Unable to report the failed sign-in", reportError);
+            setError(failure);
+          }
+        } else {
+          setError(failure);
+        }
         setIsSubmitting(false);
         return;
       }
 
+      // Both factors passed, so the failed attempt count starts again
+      await reportSuccessfulSignIn();
       setPendingMfa(null);
       setIsVerified(true);
 
@@ -206,6 +286,17 @@ export default function AuthenticationCodePage() {
           Authentication Code
         </h1>
 
+        {!isVerified && (
+          <p role="timer" className="mb-4 text-center text-[13px] text-slate-600">
+            Time remaining:{" "}
+            <span
+              className={`font-semibold ${secondsToExpiry <= 10 ? "text-red-700" : "text-slate-800"}`}
+            >
+              {secondsToExpiry}s
+            </span>
+          </p>
+        )}
+
         {step === "send" && (
           <>
             <p className="mb-8 text-center text-slate-600">
@@ -237,8 +328,13 @@ export default function AuthenticationCodePage() {
 
         {step === "code" && (
           <>
-            <p className="mb-8 text-center text-slate-600">
+            <p className="mb-4 text-center text-slate-600">
               Enter the {CODE_LENGTH}-digit code sent to {maskedPhone}.
+            </p>
+
+            <p className="mb-6 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-center text-[13px] text-amber-800">
+              If you are using the testing phone number,<br />your verification code is{" "}
+              <strong>123456</strong>.
             </p>
 
             <form onSubmit={handleSubmit} className="space-y-5">
@@ -323,8 +419,8 @@ export default function AuthenticationCodePage() {
           </button>
         </div>
 
-        {/* Used by the invisible reCAPTCHA */}
-        <div id="recaptcha-container" />
+        {/* Holds the invisible reCAPTCHA */}
+        <div ref={recaptchaHostRef} />
       </section>
     </main>
   );

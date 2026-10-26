@@ -154,7 +154,7 @@ def main() -> int:
         return 2
     if args.publish:
         result = publish_results(args.publish, ACTOR, _request())
-        print(f"Published {result['electionId']}\nSHA-256: {result['sha256']}")
+        print(f"Published {result['electionId']}\nFingerprint ({result['hashAlgorithm']}): {result['fingerprint']}")
         return 0
     if not 1 <= args.voters <= 400:
         parser.error("--voters must be between 1 and 400")
@@ -189,7 +189,7 @@ def main() -> int:
               f"  python -m backend.seed_demo_results --publish {election_id}")
         return 0
     result = publish_results(election_id, ACTOR, _request())
-    print(f"\nPublished. SHA-256: {result['sha256']}")
+    print(f"\nPublished. Fingerprint ({result['hashAlgorithm']}): {result['fingerprint']}")
     return 0
 
 

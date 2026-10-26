@@ -33,8 +33,10 @@ export type ResultPackage = {
     senateBallotsCast?: number;
     votersMarkedVoted?: number;
     receiptsIssued: number;
-    // Added in package version 4: SHA-256 of the published receipt list
-    receiptsSha256?: string;
+    // Added in package version 4: fingerprint of the published receipt list
+    // and its algorithm (one of FINGERPRINT_ALGORITHMS)
+    receiptsFingerprint?: string;
+    receiptsHashAlgorithm?: string;
   };
   contests: Contest[];
 };
@@ -45,16 +47,37 @@ export type ResultArchive = {
   bucket: string;
   retentionMode: "compliance" | "governance";
   retainUntil: string;
-  files: { name: string; fileId: string; sha256: string; size: number }[];
+  files: { name: string; fileId: string; fingerprint: string; hashAlgorithm: string; size: number }[];
 };
 
 export type PublishedResults = {
-  // SHA-256 fingerprint recorded when the package was published
-  sha256: string;
+  // Fingerprint recorded when the package was published, and the hash
+  // algorithm that made it (backend/security/hashing.py)
+  fingerprint: string;
+  algorithm: string;
   package: ResultPackage;
   // Missing for results published before archiving was added
   archive?: ResultArchive | null;
 };
+
+// Algorithms results can be published with: all available to the browser's
+// Web Crypto API (label is its name for them), and told apart by length
+export const FINGERPRINT_ALGORITHMS = [
+  { name: "sha256", label: "SHA-256", hexLength: 64 },
+  { name: "sha384", label: "SHA-384", hexLength: 96 },
+  { name: "sha512", label: "SHA-512", hexLength: 128 },
+] as const;
+
+export type FingerprintAlgorithm = (typeof FINGERPRINT_ALGORITHMS)[number];
+
+export function fingerprintAlgorithm(name: string): FingerprintAlgorithm | undefined {
+  return FINGERPRINT_ALGORITHMS.find((algorithm) => algorithm.name === name);
+}
+
+// Which algorithm a hex fingerprint was made with, judged by its length
+export function algorithmForFingerprint(hex: string): FingerprintAlgorithm | undefined {
+  return FINGERPRINT_ALGORITHMS.find((algorithm) => algorithm.hexLength === hex.length);
+}
 
 // Where voters can download the official result package (the exact published bytes)
 export function resultPackageUrl() {

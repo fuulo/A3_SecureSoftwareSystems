@@ -10,7 +10,6 @@ Publishing fails closed: if the archive is required and cannot be written and
 locked, nothing is published. The B2 key needs listBuckets,
 readBucketRetentions, writeFiles, writeFileRetentions and readFileRetentions.
 """
-import hashlib
 import logging
 from datetime import datetime, timedelta
 from typing import Any
@@ -25,6 +24,7 @@ from backend.config import (
     B2_KEY_ID,
     B2_RETENTION_MODE,
 )
+from backend.security import hashing
 
 logger = logging.getLogger(__name__)
 RETENTION_DAYS = 2557  # 7 years, including leap days
@@ -72,10 +72,12 @@ def archive_election(election_id: str, files: dict[str, tuple[bytes, str]],
             retention = version.file_retention
             if retention is None or retention.mode != mode or (retention.retain_until or 0) < retain_until_ms:
                 raise ArchiveRefused(f"{version.file_name} was stored without the required retention")
+            algorithm, fingerprint = hashing.digest("results", content)
             stored.append({
                 "name": version.file_name,
                 "fileId": version.id_,
-                "sha256": hashlib.sha256(content).hexdigest(),
+                "fingerprint": fingerprint,
+                "hashAlgorithm": algorithm,
                 "size": len(content),
             })
     except Exception as exc:

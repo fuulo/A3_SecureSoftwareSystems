@@ -36,6 +36,8 @@
         /rounds/{roundNumber}
 /receipts/{receiptHash}                ← ballot receipts (hash only)
 /publishedResults/{electionId}         ← frozen public result package
+/authLockouts/{emailHash}              ← failed sign-in counts and account locks
+/sessions/{sessionId}                  ← signed-in sessions, for the inactivity timeout
 /auditLogs/{logId}
 ```
 
@@ -464,13 +466,70 @@ records them in its `election.phaseChange` entry.
 
 ---
 
+## Account Lockouts
+
+### `authLockouts/{emailHash}`
+
+Written only by the API (`backend/routers/auth_lockout.py`); clients have no
+access. The document ID is a hash of the lower-cased email (the `index`
+algorithm in `backend/security/hashing.py`), so the collection is not a list of
+addresses. Records exist for any email that had a
+failed sign-in, registered or not, so responses reveal nothing about accounts.
+
+```jsonc
+{
+  "failures": 4,                  // consecutive failed passwords or SMS codes; reset by a real sign-in
+  "lastFailureAt": "timestamp",
+  "lockedUntil": "timestamp",     // set on every 3rd failure: 5 min, then doubling, up to 60 min
+  "disabledUid": "firebaseUid"    // the Firebase account this lock disabled; null once re-enabled
+}
+```
+
+## Sessions
+
+### `sessions/{sessionId}`
+
+Written only by the API (`backend/sessions.py`); clients have no access. One
+document per signed-in session, deleted when the session ends: on sign-out, or
+when it was not renewed in time (which also revokes the user's Firebase refresh
+tokens).
+
+```jsonc
+{
+  "uid": "firebaseUid",
+  "authTime": 1793000000,          // the Firebase sign-in this session belongs to
+  "startedAt": "timestamp",
+  "lastActivityAt": "timestamp",   // last renewal
+  "expiresAt": "timestamp"         // lastActivityAt + SESSION_IDLE_SECONDS (150 s)
+}
+```
+
+### `config/sessionSigning`
+
+The key that signs session tokens. Created by the API the first time it is
+needed, with the algorithm in `SESSION_SIGNING_ALGORITHM` (default HS256), and
+read once per API start; clients have no access. Tokens are only accepted with
+the algorithm stored here. Deleting it replaces the key on the next start and
+ends every session.
+
+```jsonc
+{
+  "key": "base64url random, 64 bytes",   // keys created before the algorithm setting: 48 bytes
+  "algorithm": "HS256",                  // HS256, HS384 or HS512
+  "createdAt": "timestamp"
+}
+```
+
 ## Receipts and Published Results
 
 ### `receipts/{receiptHash}`
 
-Created in the same transaction as a voter's ballots. The document ID is the
-SHA-256 of the 16-character receipt code; the code itself is shown to the voter
-once and never stored.
+Created in the same transaction as a voter's ballots. The document ID is a hash
+of the 16-character receipt code (the `receipt` algorithm in
+`backend/security/hashing.py`): plain hex for SHA-256, `<algorithm>-<hex>` for
+any other. The code itself is shown to the voter once and never stored.
+Verification tries every supported algorithm, so receipts issued before an
+algorithm change still verify.
 
 ```jsonc
 {
@@ -485,16 +544,21 @@ once and never stored.
 {
   "electionId": "fed2028",
   "packageJson": "{...}",     // exact bytes served as the downloadable result package
-  "sha256": "hex",            // fingerprint of packageJson, also written to the audit log
-  "receiptsSha256": "hex",    // fingerprint of the receipt list (also in the package)
+  "fingerprint": "hex",       // hash of packageJson, also written to the audit log
+  "hashAlgorithm": "sha256",  // the `results` algorithm: sha256, sha384 or sha512 (browser-checkable)
+  "sha256": "hex",            // same as fingerprint, present only when the algorithm is sha256;
+                              // packages published before fingerprint existed have only this
+  "receiptsFingerprint": "hex",  // receipt list hash, `results` algorithm (also in the package)
   "archive": {                // R-06 write-once copy; null if ARCHIVE_REQUIRED was off
     "provider": "backblaze-b2",
-    "bucket": "voting-test",
+    "bucket": "voting-app",
     "retentionMode": "compliance | governance",
     "retainUntil": "timestamp",   // 7 years (2557 days) after publishedAt
     "files": [
-      { "name": "elections/fed2028/result-package-<sha256>.json", "fileId": "...", "sha256": "hex", "size": 1234 },
-      { "name": "elections/fed2028/receipts-<receiptsSha256>.txt", "fileId": "...", "sha256": "hex", "size": 1234 }
+      { "name": "elections/fed2028/result-package-<fingerprint>.json", "fileId": "...",
+        "fingerprint": "hex", "hashAlgorithm": "sha256", "size": 1234 },
+      { "name": "elections/fed2028/receipts-<receiptsFingerprint>.txt", "fileId": "...",
+        "fingerprint": "hex", "hashAlgorithm": "sha256", "size": 1234 }
     ]
   },
   "publishedAt": "timestamp",
@@ -502,12 +566,14 @@ once and never stored.
 }
 ```
 
-**Receipt list (R-06).** Every receipt hash for the election, sorted, one per
-line, with no times or voter references. It is archived with the package and
-served at `GET /api/public/results/receipts.txt`, so anyone can check a receipt
-against a copy without the API. Receipts are never written to the audit log
-individually, because audit entries name their actor and that would link a
-voter to their receipt.
+**Receipt list (R-06).** Every receipt document ID for the election (plain hex
+for SHA-256 receipts, `<algorithm>-<hex>` after an upgrade), sorted, one per
+line, with no times or voter references. Its fingerprint is in the package as
+`receiptsFingerprint` with `receiptsHashAlgorithm`. It is archived with the
+package and served at `GET /api/public/results/receipts.txt`, so anyone can
+check a receipt against a copy without the API. Receipts are never written to
+the audit log individually, because audit entries name their actor and that
+would link a voter to their receipt.
 
 ---
 
@@ -550,6 +616,7 @@ voter to their receipt.
   "terminalId": null,
   "sessionId": "sess_8c21e4",
   "previousHash": "9f2b...e1",            // tamper-evident log: hash chain
+  "hashAlgorithm": "sha256",              // the `audit` algorithm used for this entry's hash
   "hash": "c47a...3d"
 }
 ```
@@ -561,3 +628,4 @@ voter to their receipt.
 - **`category`**: `enrolment`, `candidateManagement`, `voting`, `counting`, `export`, `security`, `admin`.
 - **`reason`**: explains the outcome, e.g. a rejected vote → `"outside_geofence"`, a recount → `"court_order_2028/17"`.
 - **`previousHash` / `hash`**: form a hash chain, a tamper-evident log security requirement.
+- **`hashAlgorithm`**: names the algorithm for this entry and is itself part of the hashed content, so it cannot be changed afterwards. Entries written before the field existed have none and were hashed with SHA-256; the chain verifies across an algorithm change.

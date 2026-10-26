@@ -9,6 +9,10 @@ import {
 } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import {
+  MFA_REQUIRED_REASON,
+  requireSecondFactor,
+} from "@/lib/mfa";
+import {
   mainHeader,
 } from "@/components/styles";
 
@@ -24,16 +28,6 @@ export default function VoterDashboardPage() {
   useEffect(() => {
     let isMounted = true;
 
-    const authenticationCodeVerified =
-      sessionStorage.getItem(
-        "authenticationCodeVerified"
-      );
-
-    if (authenticationCodeVerified !== "true") {
-      router.replace("/login");
-      return;
-    }
-
     const unsubscribe = onAuthStateChanged(
       auth,
       async (currentUser) => {
@@ -47,6 +41,12 @@ export default function VoterDashboardPage() {
           );
 
           router.replace("/login");
+          return;
+        }
+
+        // Both factors (password and text message code) are required
+        if (!(await requireSecondFactor(currentUser))) {
+          router.replace(`/login?reason=${MFA_REQUIRED_REASON}`);
           return;
         }
 
