@@ -1,10 +1,11 @@
 """Builds and publishes the official result package for a finalised election.
 
-The package is frozen as exact JSON bytes when published. Its SHA-256
-fingerprint is stored next to it and written into the audit hash chain, so a
-downloaded copy can be checked against the fingerprint on the results page.
+The package is frozen as exact JSON bytes when published. Its fingerprint (the
+"results" algorithm in backend/security/hashing.py, SHA-256 by default) is
+stored next to it with the algorithm's name and written into the audit hash
+chain, so a downloaded copy can be checked against the fingerprint on the
+results page.
 """
-import hashlib
 import json
 import logging
 from collections import Counter, defaultdict
@@ -18,6 +19,7 @@ from google.cloud import firestore
 from backend.audit import write_audit
 from backend.firestore_client import db
 from backend.reconciliation import require_reconciled
+from backend.security import hashing
 
 logger = logging.getLogger(__name__)
 PACKAGE_VERSION = 3
@@ -200,7 +202,9 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
         published_at=published_at,
     )
     content = package_bytes(package)
-    sha256 = hashlib.sha256(content).hexdigest()
+    algorithm, fingerprint = hashing.digest("results", content)
+    # Kept beside the named fingerprint for readers that expect it
+    legacy_field = {"sha256": fingerprint} if algorithm == "sha256" else {}
     transaction = db.transaction()
 
     @firestore.transactional
@@ -211,12 +215,16 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
             raise HTTPException(status_code=409, detail="Results for this election have already been published")
         write_audit(tx, actor=actor, action="results.publish", category="export",
                     target_type="election", target_id=election_id, target_path=published_ref.path,
-                    before=None, after={"sha256": sha256, "ballotsCast": len(house_ballots)},
+                    before=None,
+                    after={"fingerprint": fingerprint, "hashAlgorithm": algorithm,
+                           "ballotsCast": len(house_ballots)},
                     outcome="success", reason=None, request=request, election_id=election_id)
         tx.create(published_ref, {
             "electionId": election_id,
             "packageJson": content.decode("utf-8"),
-            "sha256": sha256,
+            "fingerprint": fingerprint,
+            "hashAlgorithm": algorithm,
+            **legacy_field,
             "publishedAt": published_at,
             "publishedBy": actor.get("staffId"),
         })
@@ -228,4 +236,4 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
     except Exception as exc:
         logger.exception("Result publication failed")
         raise HTTPException(status_code=400, detail="Unable to publish results") from exc
-    return {"electionId": election_id, "sha256": sha256}
+    return {"electionId": election_id, "fingerprint": fingerprint, "hashAlgorithm": algorithm, **legacy_field}

@@ -4,9 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { mainHeader } from "../../components/styles";
 import {
+  algorithmForFingerprint,
   fetchPublishedResults,
+  fingerprintAlgorithm,
+  FINGERPRINT_ALGORITHMS,
   formatNumber,
   resultPackageUrl,
+  type FingerprintAlgorithm,
 } from "../../lib/results";
 
 // Settings (change them here)
@@ -26,8 +30,8 @@ type Outcome = {
 };
 
 // Hashes the file in the browser. The file is never uploaded anywhere.
-async function sha256Hex(buffer: ArrayBuffer) {
-  const digest = await crypto.subtle.digest("SHA-256", buffer);
+async function fingerprintHex(buffer: ArrayBuffer, algorithm: FingerprintAlgorithm) {
+  const digest = await crypto.subtle.digest(algorithm.label, buffer);
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
@@ -162,6 +166,8 @@ export default function VerifyPackagePage() {
   const publishedHash = useRef("");
   const [file, setFile] = useState<File | null>(null);
   const [expectedHash, setExpectedHash] = useState("");
+  // Name of the published fingerprint's algorithm, for the field label
+  const [publishedLabel, setPublishedLabel] = useState("");
   const [hashNotice, setHashNotice] = useState("Loading the published fingerprint...");
   const [error, setError] = useState("");
   const [outcome, setOutcome] = useState<Outcome | null>(null);
@@ -177,8 +183,9 @@ export default function VerifyPackagePage() {
           setHashNotice("No results have been published yet.");
           return;
         }
-        publishedHash.current = published.sha256;
-        setExpectedHash((current) => current || published.sha256);
+        publishedHash.current = published.fingerprint;
+        setExpectedHash((current) => current || published.fingerprint);
+        setPublishedLabel(fingerprintAlgorithm(published.algorithm)?.label ?? published.algorithm);
         setHashNotice("");
       })
       .catch(() => {
@@ -225,8 +232,11 @@ export default function VerifyPackagePage() {
       setError(`The file is too large. Result packages are smaller than ${MAX_FILE_MB} MB.`);
       return;
     }
-    if (!/^[0-9a-f]{64}$/.test(expected)) {
-      setError("The expected fingerprint must be 64 characters (0-9 and a-f).");
+    // The fingerprint's length shows which algorithm made it
+    const algorithm = /^[0-9a-f]+$/.test(expected) ? algorithmForFingerprint(expected) : undefined;
+    if (!algorithm) {
+      const lengths = FINGERPRINT_ALGORITHMS.map((a) => a.hexLength).join(", ");
+      setError(`The expected fingerprint must be ${lengths} characters long (0-9 and a-f).`);
       return;
     }
     if (!window.crypto?.subtle) {
@@ -238,7 +248,7 @@ export default function VerifyPackagePage() {
 
     try {
       const buffer = await file.arrayBuffer();
-      const computedHash = await sha256Hex(buffer);
+      const computedHash = await fingerprintHex(buffer, algorithm);
       const text = new TextDecoder().decode(buffer);
 
       setOutcome({
@@ -304,7 +314,7 @@ export default function VerifyPackagePage() {
 
           <div>
             <label htmlFor="expected" className="mb-1 block font-semibold text-[18px]">
-              Expected SHA-256 fingerprint
+              Expected {publishedLabel ? `${publishedLabel} ` : ""}fingerprint
             </label>
             <input
               id="expected"

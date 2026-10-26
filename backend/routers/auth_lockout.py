@@ -10,7 +10,6 @@ resets the count.
 Responses are the same whether or not an account exists for the email, so the
 endpoints cannot be used to find registered addresses.
 """
-import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -24,6 +23,7 @@ from backend.auth import verify_token
 from backend.firestore_client import db
 from backend.models import LockoutReport
 from backend.rate_limit import limiter
+from backend.security import hashing
 
 router = APIRouter(prefix="/api/auth/lockout", tags=["auth"])
 logger = logging.getLogger(__name__)
@@ -44,9 +44,9 @@ def lock_duration(lock_number: int) -> timedelta:
 
 
 def _record_ref(email: str) -> Any:
-    # Keyed by a hash, so the collection is not a list of email addresses
-    key = hashlib.sha256(email.strip().lower().encode("utf-8")).hexdigest()
-    return db.collection(COLLECTION).document(key)
+    # Keyed by a hash, so the collection is not a list of email addresses. Lock
+    # records are short-lived, so after an algorithm change they simply start over.
+    return db.collection(COLLECTION).document(hashing.document_id("index", email.strip().lower()))
 
 
 def _find_user(email: str) -> Any | None:

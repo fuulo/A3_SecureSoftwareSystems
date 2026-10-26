@@ -1,17 +1,17 @@
 """Ballot receipt codes.
 
 A receipt proves a ballot was recorded without saying who cast it or what it
-contains. Only the SHA-256 of each code is stored, so the receipts collection
-cannot be turned back into working codes, and a receipt holds no voter or
-ballot reference.
+contains. Only a hash of each code is stored (the "receipt" algorithm in
+backend/security/hashing.py), so the receipts collection cannot be turned back
+into working codes, and a receipt holds no voter or ballot reference.
 """
-import hashlib
 import re
 import secrets
 from datetime import datetime, timezone
 from typing import Any
 
 from backend.firestore_client import db
+from backend.security import hashing
 
 # Letters and numbers without look-alikes (0/O, 1/I/L); must match lib/receipts.ts.
 ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
@@ -32,7 +32,14 @@ def format_receipt(code: str) -> str:
 
 
 def receipt_hash(code: str) -> str:
-    return hashlib.sha256(code.encode("utf-8")).hexdigest()
+    """The document ID a new receipt is stored under."""
+    return hashing.document_id("receipt", code)
+
+
+def receipt_hashes(code: str) -> list[str]:
+    """Every ID the receipt may be stored under, so receipts issued before an
+    algorithm upgrade still verify."""
+    return hashing.document_ids("receipt", code)
 
 
 def new_receipt_code() -> str:

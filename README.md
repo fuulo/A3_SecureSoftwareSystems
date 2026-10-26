@@ -2,6 +2,65 @@
 
 An academic e-voting prototype with a Next.js frontend and a Python FastAPI staff API.
 
+## Architecture and replaceable security
+
+The system is built from distinct subsystems around a centralised database.
+Security mechanisms and cryptographic standards sit behind interfaces, so they
+can be replaced or upgraded without redesigning the core voting functionality.
+
+| Part | Runs as | Responsible for |
+| --- | --- | --- |
+| Frontend | Next.js behind its own TLS listener (`npm run dev`) | Pages for voters, staff and the public; calls the API over HTTPS |
+| API | FastAPI behind its own TLS listener (`python -m backend.tls_server`) | Voting, counting, staff and election management; each security mechanism in its own module |
+| Firebase | Managed service | Sign-in (Authentication) and the centralised database (Firestore), shared by both |
+
+**Core voting functionality** is ballot casting (`record_ballot` in
+[backend/routers/voter_ballots.py](./backend/routers/voter_ballots.py)),
+reconciliation ([backend/reconciliation.py](./backend/reconciliation.py)), and
+counting and publication ([backend/results.py](./backend/results.py)). It
+contains no algorithm choices: it calls the interfaces below.
+
+### Security subsystems
+
+| # | Subsystem | Interface used by the rest of the system | Mechanism or standard | How to replace or upgrade | Replaceable without redesigning voting |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Transport security | [tls-policy.json](./tls-policy.json); listeners that wrap each app ([server/secure-listener.mjs](./server/secure-listener.mjs), [backend/tls_server.py](./backend/tls_server.py)) | TLS 1.3, AEAD cipher suites | Edit `tls-policy.json` and restart both servers, or swap a listener | ✅ |
+| 2 | Session management | `verify_token` ([backend/auth.py](./backend/auth.py)), [backend/sessions.py](./backend/sessions.py), [lib/session.ts](./lib/session.ts) | JWT (HS256), 2-minute inactivity timeout | `SESSION_SIGNING_ALGORITHM` (HS256, HS384, HS512), then delete `config/sessionSigning` and restart; time limits in one place each | ✅ |
+| 3 | Account lockout | `/api/auth/lockout/*` ([backend/routers/auth_lockout.py](./backend/routers/auth_lockout.py)), [lib/lockout.ts](./lib/lockout.ts) | 3 failures, progressive locks | Rules are constants in one module | ✅ |
+| 4 | Access control | `staff_access`, `require_roles`, IP allowlist checks ([backend/auth.py](./backend/auth.py)) | Roles, IP ranges | One module | ✅ |
+| 5 | Rate limiting | `limiter.limit(...)` ([backend/rate_limit.py](./backend/rate_limit.py)) | Per-IP limits (slowapi) | Replace the limiter in one module | ✅ |
+| 6 | Data encryption and key management | `EncryptionService`, `get_encryption_service()` ([backend/security/](./backend/security/)) | AES-256-GCM, versioned keys, 90-day rotation | New key version, or a new service class | ✅ |
+| 7 | Ballot receipts | `issue_receipt`, `receipt_hash` ([backend/receipts.py](./backend/receipts.py)) | Hash provider, `receipt` | `HASH_ALGORITHM_RECEIPT`; earlier receipts still verify | ✅ |
+| 8 | Audit log integrity | `write_audit`, chain verification ([backend/audit.py](./backend/audit.py)) | Hash chain, provider `audit` | `HASH_ALGORITHM_AUDIT`; each entry names its algorithm and the chain verifies across a change | ✅ |
+| 9 | Result integrity | `publish_results`, `GET /api/public/results`, the verify-package page | Fingerprint, provider `results` | `HASH_ALGORITHM_RESULTS` (sha256, sha384, sha512); the browser check follows the published algorithm | ✅ |
+| 10 | Authentication and MFA | Firebase Authentication; on the API, `verify_firebase_token` | Password and SMS one-time code | The API side is one function, but the sign-in pages and [lib/mfa.ts](./lib/mfa.ts) use the Firebase SDK directly | ⚠️ Partly: a new provider means rewriting the sign-in pages, not the voting logic |
+| 11 | Voter identity index (GovID) | [backend/routers/employee_voters.py](./backend/routers/employee_voters.py), [backend/routers/voter_registration.py](./backend/routers/voter_registration.py) | Staff path: SHA-256 called directly; self-registration: keyed hash from the encryption module | Both call sites must change | ❌ Not yet |
+
+**Result: 9 of 11 security subsystems (82%) can be replaced or upgraded through
+their interface alone.**
+
+### Hash algorithms
+
+[backend/security/hashing.py](./backend/security/hashing.py) is the one place
+that hashes for receipts, the audit log, result fingerprints and lookup IDs.
+Each purpose has its own setting in `backend/.env`, SHA-256 by default:
+
+```dotenv
+HASH_ALGORITHM_RECEIPT=sha256   # sha256, sha384, sha512, sha3_256, sha3_512
+HASH_ALGORITHM_AUDIT=sha256
+HASH_ALGORITHM_RESULTS=sha256   # sha256, sha384 or sha512: checked in browsers
+HASH_ALGORITHM_INDEX=sha256     # lockout records and audit-view throttling
+```
+
+A change applies to new values only. Stored values name their algorithm, and
+values from before had SHA-256, so existing receipts, audit entries and
+published results keep verifying. An unsupported setting stops the API at
+startup.
+
+Tests: `python -m pytest backend/tests/test_hashing.py backend/tests/test_tls_server.py backend/tests/test_sessions.py`
+cover switching each algorithm, verifying data made before the switch, and
+the shared TLS policy deciding which connections are accepted.
+
 ## Run the frontend
 
 Set the Firebase client configuration in `.env.local`, including:
@@ -44,12 +103,16 @@ checks every connection before Next.js reads any request data:
 | No data sent within 10 seconds | Closed | `noClientHello` |
 | TLS 1.0 / 1.1, or any other failed handshake | Closed | `handshakeFailed` |
 | Negotiated TLS 1.2 | Closed after the handshake | `protocolBelowTls13` |
-| TLS 1.3 with a cipher outside the TLS 1.3 AEAD suites | Closed | `cipherNotAllowed` |
+| TLS 1.3 with a cipher not in the policy | Closed | `cipherNotAllowed` |
 | TLS 1.3 with an allowed cipher | Passed to Next.js | — |
+
+The minimum version and allowed ciphers come from
+[tls-policy.json](./tls-policy.json), shared with the API listener. Restart both
+servers after editing it; a missing or invalid file stops them starting.
 
 Rejections are printed to the console and appended as JSON lines to
 `logs/tls-security.log`. Override the defaults with `TLS_CERT_FILE`,
-`TLS_KEY_FILE`, `TLS_LOG_FILE`, `HOST` and `PORT`.
+`TLS_KEY_FILE`, `TLS_LOG_FILE`, `TLS_POLICY_FILE`, `HOST` and `PORT`.
 
 To check it by hand (Git Bash or any shell with OpenSSL and curl):
 
@@ -118,7 +181,7 @@ python -m pytest backend/tests
 | `POST /api/voter/ballots` | Enrolled voter (Firebase token) | Records House and Senate ballots and returns a one-time receipt code |
 | `POST /api/admin/elections/{id}/results/publish` | Admin | Counts a finalised election and freezes the result package |
 | `POST /api/admin/elections/{id}/phase` with `{"to": "finalised"}` | Admin | Finalises only if voters marked voted, House ballots, Senate ballots and receipts all match (R-05); a mismatch is refused and logged |
-| `GET /api/public/results` | Anyone | Latest published results and their SHA-256 fingerprint |
+| `GET /api/public/results` | Anyone | Latest published results, their fingerprint and its hash algorithm (SHA-256 by default) |
 | `GET /api/public/results/package.json` | Anyone | Downloadable result package (the exact published bytes) |
 | `POST /api/public/receipts/verify` | Anyone (10 per minute) | Confirms a receipt's ballot was recorded, never its contents |
 
@@ -150,7 +213,8 @@ real pages.
 casts their ballots through the same code as `POST /api/voter/ballots`,
 finalises the election and publishes the results through the same code as the
 admin publish endpoint. It prints sample receipt codes and the published
-SHA-256 fingerprint; keep that output for the checks below.
+fingerprint with its algorithm (SHA-256 by default); keep that output for the
+checks below.
 
 By default it only writes to the Firestore emulator. To use the shared
 development project instead, add `--allow-live`. Tell the team first, because

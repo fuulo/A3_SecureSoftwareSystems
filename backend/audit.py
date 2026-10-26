@@ -1,4 +1,3 @@
-import hashlib
 import json
 import uuid
 from collections.abc import Mapping
@@ -9,6 +8,7 @@ from google.cloud import firestore
 from starlette.requests import Request
 
 from backend.firestore_client import db
+from backend.security import hashing
 
 
 def _redact(value: Any) -> Any:
@@ -75,9 +75,11 @@ def write_audit(
         "terminalId": None,
         "sessionId": request.headers.get("x-session-id"),
         "previousHash": previous_hash,
+        # Part of the hashed content, so the algorithm cannot be changed afterwards
+        "hashAlgorithm": hashing.algorithm_for("audit"),
     }
     canonical = json.dumps(entry, sort_keys=True, separators=(",", ":"), default=str)
-    entry["hash"] = hashlib.sha256((previous_hash + canonical).encode("utf-8")).hexdigest()
+    entry["hash"] = hashing.hexdigest(previous_hash + canonical, entry["hashAlgorithm"])
     tx_or_batch.set(log_ref, entry)
     tx_or_batch.set(
         head_ref,

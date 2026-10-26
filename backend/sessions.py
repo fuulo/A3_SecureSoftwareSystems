@@ -29,7 +29,7 @@ from firebase_admin import auth
 from google.cloud import firestore
 
 from backend.audit import audit_standalone
-from backend.config import SESSION_IDLE_SECONDS
+from backend.config import SESSION_IDLE_SECONDS, SESSION_SIGNING_ALGORITHM
 from backend.firestore_client import db
 
 logger = logging.getLogger(__name__)
@@ -40,43 +40,58 @@ START_WINDOW = timedelta(minutes=5)
 SWEEP_INTERVAL_SECONDS = 30
 SESSION_INVALID = "Session invalid"
 SESSION_EXPIRED = "Session expired"
-_ALGORITHM = "HS256"
 SIGNING_KEY_DOCUMENT = "config/sessionSigning"
+# HMAC-SHA2 JWT algorithms; the key is 512 bits, enough for the strongest
+SUPPORTED_ALGORITHMS = {"HS256", "HS384", "HS512"}
+_KEY_BYTES = 64
 
-_secret: str | None = None
-_secret_lock = threading.Lock()
+if SESSION_SIGNING_ALGORITHM not in SUPPORTED_ALGORITHMS:
+    raise ValueError(f"Unsupported SESSION_SIGNING_ALGORITHM: {SESSION_SIGNING_ALGORITHM!r}")
+
+# (key, algorithm), loaded once
+_signing: tuple[str, str] | None = None
+_signing_lock = threading.Lock()
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _load_or_create_signing_key() -> str:
+def _load_or_create_signing_key() -> tuple[str, str]:
+    """The stored key and the algorithm it is for. A new key uses
+    SESSION_SIGNING_ALGORITHM; an existing one keeps the algorithm stored with it."""
     ref = db.document(SIGNING_KEY_DOCUMENT)
-    candidate = secrets.token_urlsafe(48)
+    candidate = secrets.token_urlsafe(_KEY_BYTES)
     transaction = db.transaction()
 
     # In a transaction, so APIs starting at the same time agree on one key
     @firestore.transactional
-    def load(tx: Any) -> str:
+    def load(tx: Any) -> tuple[str, str]:
         snapshot = ref.get(transaction=tx)
         if snapshot.exists:
-            return (snapshot.to_dict() or {})["key"]
-        tx.set(ref, {"key": candidate, "algorithm": _ALGORITHM, "createdAt": _now()})
-        logger.info("Created the session signing key in %s", SIGNING_KEY_DOCUMENT)
-        return candidate
+            stored = snapshot.to_dict() or {}
+            return stored["key"], stored.get("algorithm", "HS256")
+        tx.set(ref, {"key": candidate, "algorithm": SESSION_SIGNING_ALGORITHM, "createdAt": _now()})
+        logger.info("Created a %s session signing key in %s", SESSION_SIGNING_ALGORITHM, SIGNING_KEY_DOCUMENT)
+        return candidate, SESSION_SIGNING_ALGORITHM
 
-    return load(transaction)
+    key, algorithm = load(transaction)
+    if algorithm not in SUPPORTED_ALGORITHMS:
+        raise ValueError(f"Unsupported session signing algorithm in {SIGNING_KEY_DOCUMENT}: {algorithm!r}")
+    if algorithm != SESSION_SIGNING_ALGORITHM:
+        logger.warning("The stored session key uses %s, not SESSION_SIGNING_ALGORITHM %s; delete %s "
+                       "and restart to switch", algorithm, SESSION_SIGNING_ALGORITHM, SIGNING_KEY_DOCUMENT)
+    return key, algorithm
 
 
-def _signing_key() -> str:
-    """The key that signs session tokens, loaded from Firestore once."""
-    global _secret
-    if _secret is None:
-        with _secret_lock:
-            if _secret is None:
-                _secret = _load_or_create_signing_key()
-    return _secret
+def _signing_key() -> tuple[str, str]:
+    """(key, algorithm) for session tokens, loaded from Firestore once."""
+    global _signing
+    if _signing is None:
+        with _signing_lock:
+            if _signing is None:
+                _signing = _load_or_create_signing_key()
+    return _signing
 
 
 def _ref(sid: str) -> Any:
@@ -85,11 +100,12 @@ def _ref(sid: str) -> Any:
 
 def _issue(uid: str, sid: str, auth_time: int, now: datetime) -> dict[str, Any]:
     expires = now + timedelta(seconds=SESSION_IDLE_SECONDS)
+    key, algorithm = _signing_key()
     token = jwt.encode(
         {"sub": uid, "sid": sid, "auth_time": auth_time,
          "iat": int(now.timestamp()), "exp": int(expires.timestamp())},
-        _signing_key(),
-        algorithm=_ALGORITHM,
+        key,
+        algorithm=algorithm,
     )
     return {"sessionToken": token, "expiresAt": expires.isoformat(), "idleSeconds": SESSION_IDLE_SECONDS}
 
@@ -98,9 +114,11 @@ def decode(token: str | None) -> dict[str, Any] | None:
     """The token's claims if this API signed it, expired or not; otherwise None."""
     if not token:
         return None
+    key, algorithm = _signing_key()
     try:
-        # Times are checked against _now() by the callers, not PyJWT's own clock
-        return jwt.decode(token, _signing_key(), algorithms=[_ALGORITHM],
+        # Only the stored key's algorithm is accepted. Times are checked
+        # against _now() by the callers, not PyJWT's own clock.
+        return jwt.decode(token, key, algorithms=[algorithm],
                           options={"verify_exp": False, "verify_iat": False,
                                    "require": ["sub", "sid", "auth_time", "exp"]})
     except jwt.InvalidTokenError:

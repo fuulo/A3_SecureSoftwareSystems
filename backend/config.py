@@ -25,6 +25,18 @@ TRUST_PROXY_HEADERS = _as_bool(os.getenv("TRUST_PROXY_HEADERS"))
 TLS_CERT_FILE = os.getenv("TLS_CERT_FILE", "certs/localhost.pem")
 TLS_KEY_FILE = os.getenv("TLS_KEY_FILE", "certs/localhost-key.pem")
 TLS_LOG_FILE = os.getenv("TLS_LOG_FILE", "logs/tls-security-api.log")
+# Hash algorithm for each purpose (see backend/security/hashing.py). A change
+# applies to new values only; values made earlier keep verifying.
+HASH_ALGORITHMS = {
+    "receipt": os.getenv("HASH_ALGORITHM_RECEIPT", "sha256"),
+    "audit": os.getenv("HASH_ALGORITHM_AUDIT", "sha256"),
+    "results": os.getenv("HASH_ALGORITHM_RESULTS", "sha256"),
+    "index": os.getenv("HASH_ALGORITHM_INDEX", "sha256"),
+}
+# Used when a new session signing key is created (see backend/sessions.py)
+SESSION_SIGNING_ALGORITHM = os.getenv("SESSION_SIGNING_ALGORITHM", "HS256")
+# Shared by the frontend and API TLS listeners
+TLS_POLICY_FILE = os.getenv("TLS_POLICY_FILE", "tls-policy.json")
 # Server-side idle limit: the browser signs out after 2 minutes, and renews at
 # most every 30 seconds, so the server allows 2.5 minutes
 SESSION_IDLE_SECONDS = int(os.getenv("SESSION_IDLE_SECONDS", "150"))

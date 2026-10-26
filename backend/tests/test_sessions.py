@@ -64,7 +64,7 @@ def env(monkeypatch):
     monkeypatch.setattr(sessions, "auth", fake_auth)
     monkeypatch.setattr(sessions, "_now", lambda: clock["now"])
     # No signing key cached, so each test loads or creates one in its own store
-    monkeypatch.setattr(sessions, "_secret", None)
+    monkeypatch.setattr(sessions, "_signing", None)
     monkeypatch.setattr(firestore, "transactional", fake_transactional)
     limiter.reset()
     yield Env(db, fake_auth, clock)
@@ -87,14 +87,27 @@ def test_the_signing_key_is_created_once_and_stored(env):
     stored = env.db.store[sessions.SIGNING_KEY_DOCUMENT]["key"]
     env.start()
 
-    assert len(stored) >= 43
+    assert len(stored) >= 86  # 512 bits, base64url
+    assert env.db.store[sessions.SIGNING_KEY_DOCUMENT]["algorithm"] == "HS256"
     assert env.db.store[sessions.SIGNING_KEY_DOCUMENT]["key"] == stored
+
+
+def test_the_signing_algorithm_comes_from_the_stored_key(env):
+    env.db.store[sessions.SIGNING_KEY_DOCUMENT] = {"key": "k" * 86, "algorithm": "HS512"}
+
+    token = env.start()
+
+    assert jwt.get_unverified_header(token)["alg"] == "HS512"
+    assert env.renew(token).status_code == 200
+    # A token claiming any other algorithm is refused, even with the right key
+    downgraded = jwt.encode(jwt.decode(token, options={"verify_signature": False}), "k" * 86, algorithm="HS256")
+    assert env.renew(downgraded).json()["detail"] == sessions.SESSION_INVALID
 
 
 def test_sessions_survive_an_api_restart(env, monkeypatch):
     token = env.start()
     # A restarted API has no key in memory and loads the stored one
-    monkeypatch.setattr(sessions, "_secret", None)
+    monkeypatch.setattr(sessions, "_signing", None)
 
     assert env.renew(token).status_code == 200
 

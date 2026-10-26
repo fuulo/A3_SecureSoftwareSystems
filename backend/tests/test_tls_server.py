@@ -5,6 +5,7 @@ import socket
 import ssl
 import threading
 import time
+from pathlib import Path
 
 import pytest
 import uvicorn
@@ -14,6 +15,8 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 from backend import tls_server
+
+REPO_POLICY = Path(__file__).resolve().parents[2] / "tls-policy.json"
 
 
 async def hello_app(scope, receive, send):
@@ -46,16 +49,22 @@ def write_certificate(directory):
 
 
 @pytest.fixture
-def running_server(tmp_path, monkeypatch):
+def running_server(request, tmp_path, monkeypatch):
     monkeypatch.setattr(tls_server, "CLIENT_HELLO_TIMEOUT_SECONDS", 0.5)
     cert_file, key_file = write_certificate(tmp_path)
     log_file = tmp_path / "tls.log"
+    # The project's tls-policy.json, unless a test supplies its own policy
+    policy_file = REPO_POLICY
+    if getattr(request, "param", None):
+        policy_file = tmp_path / "tls-policy.json"
+        policy_file.write_text(json.dumps(request.param))
     # Bound but not listening, like the socket uvicorn passes to --reload workers
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     config = uvicorn.Config(hello_app, lifespan="off", log_level="warning")
-    server = tls_server.TlsServer(config, cert_file=str(cert_file), key_file=str(key_file), log_file=str(log_file))
+    server = tls_server.TlsServer(config, cert_file=str(cert_file), key_file=str(key_file), log_file=str(log_file),
+                                  policy_file=str(policy_file))
     thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
     thread.start()
     deadline = time.monotonic() + 10
@@ -170,3 +179,51 @@ def test_failed_handshake_is_logged(running_server):
 
     [entry] = log_entries()
     assert entry["reason"] == "handshakeFailed"
+
+
+def test_the_project_policy_requires_tls_1_3():
+    policy = tls_server.load_tls_policy(str(REPO_POLICY))
+
+    assert policy.minimum_version == "TLSv1.3"
+    assert policy.violation("TLSv1.2", "TLS_AES_256_GCM_SHA384") == "protocolBelowTls13"
+    assert policy.violation("TLSv1.3", "TLS_AES_256_GCM_SHA384") is None
+
+
+@pytest.mark.parametrize("content", [
+    "not json",
+    json.dumps({"minimumVersion": "TLSv9", "allowedCiphers": ["TLS_AES_256_GCM_SHA384"]}),
+    json.dumps({"minimumVersion": "TLSv1.3", "allowedCiphers": []}),
+])
+def test_an_unusable_policy_stops_the_server_starting(tmp_path, content):
+    path = tmp_path / "tls-policy.json"
+    path.write_text(content)
+
+    with pytest.raises(ValueError):
+        tls_server.load_tls_policy(str(path))
+
+
+# Only ChaCha20 allowed: the session negotiated with the default client
+# (normally AES-GCM) breaks the policy, so the policy file alone decides
+@pytest.mark.parametrize("running_server", [
+    {"minimumVersion": "TLSv1.3", "allowedCiphers": ["TLS_CHACHA20_POLY1305_SHA256"]},
+], indirect=True)
+def test_the_policy_file_decides_which_ciphers_are_allowed(running_server):
+    port, log_entries = running_server
+    context = client_context(minimum_version=ssl.TLSVersion.TLSv1_3)
+
+    response = b""
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as raw:
+        try:
+            with context.wrap_socket(raw) as tls:
+                negotiated = tls.cipher()[0]
+                tls.sendall(REQUEST)
+                response = read_all(tls)
+        except OSError:
+            negotiated = None
+
+    if negotiated == "TLS_CHACHA20_POLY1305_SHA256":
+        assert response.startswith(b"HTTP/1.1 200")
+    else:
+        assert response == b""
+        [entry] = log_entries()
+        assert entry["reason"] == "cipherNotAllowed"

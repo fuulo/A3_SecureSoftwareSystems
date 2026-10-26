@@ -7,6 +7,7 @@ from google.cloud import firestore
 from backend.audit import write_audit
 from backend.auth import staff_access
 from backend.firestore_client import db
+from backend.security import hashing
 
 router = APIRouter(prefix="/api/admin/audit-logs", tags=["admin-audit"])
 admin_access = staff_access("admin")
@@ -43,8 +44,7 @@ def list_audit_logs(request: Request, actorId: str | None = None,
     has_more = len(records) > limit
     records = records[:limit]
     session = request.headers.get("x-session-id") or staff["staffId"]
-    import hashlib
-    throttle_id = hashlib.sha256(f'{staff["staffId"]}:{session}'.encode()).hexdigest()
+    throttle_id = hashing.document_id("index", f'{staff["staffId"]}:{session}')
     throttle_ref = db.collection("auditMeta").document("viewSessions").collection("sessions").document(throttle_id)
     transaction = db.transaction()
 
@@ -68,7 +68,6 @@ def list_audit_logs(request: Request, actorId: str | None = None,
 
 @router.get("/verify")
 def verify_audit_chain(staff: dict[str, Any] = Depends(admin_access)) -> dict[str, Any]:
-    import hashlib
     import json
 
     previous_hash = ""
@@ -89,7 +88,12 @@ def verify_audit_chain(staff: dict[str, Any] = Depends(admin_access)) -> dict[st
                 first_broken = snapshot.id
                 break
             canonical = json.dumps(entry, sort_keys=True, separators=(",", ":"), default=str)
-            expected = hashlib.sha256((previous_hash + canonical).encode("utf-8")).hexdigest()
+            # Each entry names its algorithm; entries from before that existed used SHA-256
+            algorithm = entry.get("hashAlgorithm", hashing.LEGACY_ALGORITHM)
+            try:
+                expected = hashing.hexdigest(previous_hash + canonical, algorithm)
+            except ValueError:
+                expected = None
             if stored_hash != expected:
                 first_broken = snapshot.id
                 break

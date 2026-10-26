@@ -1,18 +1,39 @@
-import { createWriteStream, mkdirSync } from "node:fs";
+import { createWriteStream, mkdirSync, readFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import path from "node:path";
 import { createServer as createTlsServer } from "node:tls";
 
-// The only cipher suites TLS 1.3 negotiates by default (RFC 8446 section 9.1)
-const ALLOWED_CIPHERS = new Set([
-  "TLS_AES_256_GCM_SHA384",
-  "TLS_CHACHA20_POLY1305_SHA256",
-  "TLS_AES_128_GCM_SHA256",
-]);
+// Oldest first, so a negotiated version can be compared with the policy minimum
+const TLS_VERSIONS = ["TLSv1", "TLSv1.1", "TLSv1.2", "TLSv1.3"];
 // Every TLS connection opens with a handshake record (content type 22)
 const TLS_HANDSHAKE_RECORD = 0x16;
 const CLIENT_HELLO_TIMEOUT_MS = 10_000;
+
+/**
+ * Reads the TLS policy shared with the API listener (tls-policy.json) and
+ * checks it. Throws if it is missing or unusable, so the server does not start.
+ */
+export function loadTlsPolicy(file) {
+  const policy = JSON.parse(readFileSync(file, "utf8"));
+  if (!TLS_VERSIONS.includes(policy.minimumVersion)) {
+    throw new Error(`minimumVersion must be one of ${TLS_VERSIONS.join(", ")}`);
+  }
+  const ciphers = policy.allowedCiphers;
+  if (!Array.isArray(ciphers) || ciphers.length === 0 || !ciphers.every((c) => typeof c === "string")) {
+    throw new Error("allowedCiphers must be a non-empty list of cipher names");
+  }
+  return { minimumVersion: policy.minimumVersion, allowedCiphers: new Set(ciphers) };
+}
+
+// Why a negotiated session breaks the policy, or null if it is allowed
+function policyViolation(policy, protocol, cipher) {
+  if (TLS_VERSIONS.indexOf(protocol) < TLS_VERSIONS.indexOf(policy.minimumVersion)) {
+    return "protocolBelowTls13";
+  }
+  if (!policy.allowedCiphers.has(cipher)) return "cipherNotAllowed";
+  return null;
+}
 
 function createSecurityLog(logFile) {
   mkdirSync(path.dirname(logFile), { recursive: true });
@@ -26,21 +47,24 @@ function createSecurityLog(logFile) {
 }
 
 /**
- * Accepts TCP connections and passes them to `httpServer` only once a TLS 1.3
- * session with an allowed cipher has been negotiated. Plaintext connections,
- * failed handshakes and older protocol versions are logged and closed before
- * any request data is read.
+ * Accepts TCP connections and passes them to `httpServer` only once a session
+ * meeting the TLS policy (by default TLS 1.3 with an allowed cipher) has been
+ * negotiated. Plaintext connections, failed handshakes and older protocol
+ * versions are logged and closed before any request data is read.
  */
-export function createSecureListener({ key, cert, logFile }) {
+export function createSecureListener({ key, cert, logFile, policy }) {
   const logRejection = createSecurityLog(logFile);
   const httpServer = createHttpServer();
 
-  // TLS 1.2 is left negotiable so the check below can inspect and log it;
-  // OpenSSL itself refuses anything older, which surfaces as a handshake failure
+  // Versions down to TLS 1.2 are left negotiable so the policy check below can
+  // inspect and log them; OpenSSL itself refuses anything older, which surfaces
+  // as a handshake failure
+  const negotiableFloor =
+    TLS_VERSIONS.indexOf(policy.minimumVersion) < TLS_VERSIONS.indexOf("TLSv1.2") ? policy.minimumVersion : "TLSv1.2";
   const tlsServer = createTlsServer({
     key,
     cert,
-    minVersion: "TLSv1.2",
+    minVersion: negotiableFloor,
     ALPNProtocols: ["http/1.1"],
     handshakeTimeout: CLIENT_HELLO_TIMEOUT_MS,
   });
@@ -48,9 +72,7 @@ export function createSecureListener({ key, cert, logFile }) {
   tlsServer.on("secureConnection", (tlsSocket) => {
     const protocol = tlsSocket.getProtocol();
     const cipher = tlsSocket.getCipher()?.standardName;
-    let reason = null;
-    if (protocol !== "TLSv1.3") reason = "protocolBelowTls13";
-    else if (!ALLOWED_CIPHERS.has(cipher)) reason = "cipherNotAllowed";
+    const reason = policyViolation(policy, protocol, cipher);
     if (reason) {
       logRejection(reason, {
         remoteAddress: tlsSocket.remoteAddress,

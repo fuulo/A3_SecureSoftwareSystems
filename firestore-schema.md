@@ -471,8 +471,9 @@ records them in its `election.phaseChange` entry.
 ### `authLockouts/{emailHash}`
 
 Written only by the API (`backend/routers/auth_lockout.py`); clients have no
-access. The document ID is the SHA-256 of the lower-cased email, so the
-collection is not a list of addresses. Records exist for any email that had a
+access. The document ID is a hash of the lower-cased email (the `index`
+algorithm in `backend/security/hashing.py`), so the collection is not a list of
+addresses. Records exist for any email that had a
 failed sign-in, registered or not, so responses reveal nothing about accounts.
 
 ```jsonc
@@ -505,14 +506,16 @@ tokens).
 
 ### `config/sessionSigning`
 
-The key that signs session tokens (HS256). Created by the API the first time it
-is needed and read once per API start; clients have no access. Deleting it
-replaces the key on the next start and ends every session.
+The key that signs session tokens. Created by the API the first time it is
+needed, with the algorithm in `SESSION_SIGNING_ALGORITHM` (default HS256), and
+read once per API start; clients have no access. Tokens are only accepted with
+the algorithm stored here. Deleting it replaces the key on the next start and
+ends every session.
 
 ```jsonc
 {
-  "key": "base64url random, 48 bytes",
-  "algorithm": "HS256",
+  "key": "base64url random, 64 bytes",   // keys created before the algorithm setting: 48 bytes
+  "algorithm": "HS256",                  // HS256, HS384 or HS512
   "createdAt": "timestamp"
 }
 ```
@@ -521,9 +524,12 @@ replaces the key on the next start and ends every session.
 
 ### `receipts/{receiptHash}`
 
-Created in the same transaction as a voter's ballots. The document ID is the
-SHA-256 of the 16-character receipt code; the code itself is shown to the voter
-once and never stored.
+Created in the same transaction as a voter's ballots. The document ID is a hash
+of the 16-character receipt code (the `receipt` algorithm in
+`backend/security/hashing.py`): plain hex for SHA-256, `<algorithm>-<hex>` for
+any other. The code itself is shown to the voter once and never stored.
+Verification tries every supported algorithm, so receipts issued before an
+algorithm change still verify.
 
 ```jsonc
 {
@@ -538,7 +544,10 @@ once and never stored.
 {
   "electionId": "fed2028",
   "packageJson": "{...}",     // exact bytes served as the downloadable result package
-  "sha256": "hex",            // fingerprint of packageJson, also written to the audit log
+  "fingerprint": "hex",       // hash of packageJson, also written to the audit log
+  "hashAlgorithm": "sha256",  // the `results` algorithm: sha256, sha384 or sha512 (browser-checkable)
+  "sha256": "hex",            // same as fingerprint, present only when the algorithm is sha256;
+                              // packages published before fingerprint existed have only this
   "publishedAt": "timestamp",
   "publishedBy": "staffId"
 }
@@ -585,6 +594,7 @@ once and never stored.
   "terminalId": null,
   "sessionId": "sess_8c21e4",
   "previousHash": "9f2b...e1",            // tamper-evident log: hash chain
+  "hashAlgorithm": "sha256",              // the `audit` algorithm used for this entry's hash
   "hash": "c47a...3d"
 }
 ```
@@ -596,3 +606,4 @@ once and never stored.
 - **`category`**: `enrolment`, `candidateManagement`, `voting`, `counting`, `export`, `security`, `admin`.
 - **`reason`**: explains the outcome, e.g. a rejected vote → `"outside_geofence"`, a recount → `"court_order_2028/17"`.
 - **`previousHash` / `hash`**: form a hash chain, a tamper-evident log security requirement.
+- **`hashAlgorithm`**: names the algorithm for this entry and is itself part of the hashed content, so it cannot be changed afterwards. Entries written before the field existed have none and were hashed with SHA-256; the chain verifies across an algorithm change.
