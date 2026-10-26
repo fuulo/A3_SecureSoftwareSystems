@@ -17,12 +17,14 @@ from zoneinfo import ZoneInfo
 from fastapi import HTTPException, Request
 from google.cloud import firestore
 
+from backend import ballots
 from backend.archive import archive_election
 from backend.audit import write_audit
 from backend.firestore_client import db
 from backend.receipts import receipt_list
 from backend.reconciliation import require_reconciled
 from backend.security import hashing
+from backend.security.key_management import get_encryption_service
 
 logger = logging.getLogger(__name__)
 PACKAGE_VERSION = 4
@@ -175,6 +177,26 @@ def _count(query: Any) -> int:
     return int(query.count().get()[0][0].value)
 
 
+def _open_ballots(candidates: Docs, house_docs: list[dict[str, Any]],
+                  senate_docs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Decrypt ballots for counting. Formality is decided here, from the candidates
+    each contest has, so it is never stored beside an encrypted ballot."""
+    usable = [c for c in candidates.values() if c.get("withdrawn") is not True and c.get("excluded") is not True]
+    house_counts = Counter(c.get("divisionId") for c in usable if c.get("chamber") == "house")
+    senate_counts = Counter(c.get("stateId") for c in usable if c.get("chamber") == "senate")
+    encrypted = any(ballots.is_encrypted(doc) for doc in house_docs + senate_docs)
+    encryption = get_encryption_service() if encrypted else None
+    try:
+        return (
+            [ballots.open_house(doc, encryption, house_counts[doc.get("divisionId")]) for doc in house_docs],
+            [ballots.open_senate(doc, encryption, senate_counts[doc.get("stateId")]) for doc in senate_docs],
+        )
+    except ballots.BallotUnreadable as exc:
+        logger.exception("A ballot could not be opened for counting")
+        raise HTTPException(status_code=409,
+                            detail="A ballot could not be decrypted, so results were not published") from exc
+
+
 def publish_results(election_id: str, actor: dict[str, Any], request: Request) -> dict[str, str]:
     election_ref = db.collection("elections").document(election_id)
     published_ref = db.collection("publishedResults").document(election_id)
@@ -192,8 +214,11 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
     # Ballots cannot change once an election is finalised, so they are read outside the transaction.
     candidates = _docs(election_ref.collection("candidates"))
     parties = _docs(election_ref.collection("parties"))
-    house_ballots = [item.to_dict() or {} for item in election_ref.collection("houseBallots").stream()]
-    senate_ballots = [item.to_dict() or {} for item in election_ref.collection("senateBallots").stream()]
+    house_ballots, senate_ballots = _open_ballots(
+        candidates,
+        [item.to_dict() or {} for item in election_ref.collection("houseBallots").stream()],
+        [item.to_dict() or {} for item in election_ref.collection("senateBallots").stream()],
+    )
     contests = (
         tally_house(_docs(election_ref.collection("divisions")), candidates, parties, house_ballots)
         + tally_senate(_docs(election_ref.collection("senateRegions")), _docs(election_ref.collection("senateGroups")),

@@ -389,9 +389,9 @@ Candidate withdrawals are soft state changes. A withdrawn candidate is never del
 ```jsonc
 {
   "divisionId": "div_melbourne",
-  "preferences": ["cand_5", "cand_2", "cand_9", "cand_1"],   // index 0 = preference 1
   "source": "electronic | paper_scan",
-  "isFormal": true | false           // valid vote or not (formal vs informal)
+  // AES-256-GCM of the JSON list ["cand_5", "cand_2", ...], index 0 = preference 1
+  "encryptedPreferences": { "ciphertext": "base64(nonce + ciphertext)", "keyId": "key-20281001000000" }
 }
 ```
 
@@ -400,16 +400,28 @@ Candidate withdrawals are soft state changes. A withdrawn candidate is never del
 ```jsonc
 {
   "stateId": "VIC",
-  "aboveTheLine": ["group_C", "group_A", "group_F"],   // empty if not used
-  "belowTheLine": ["cand_44", "cand_41", "cand_12"],   // empty if not used
   "source": "electronic | paper_scan",
-  "isFormal": true | false,
-  "countedAs": "aboveTheLine | belowTheLine | null"   // which part is counted; a formal BTL vote wins
+  // AES-256-GCM of {"aboveTheLine": ["group_C", ...], "belowTheLine": ["cand_44", ...]}
+  "encryptedChoices": { "ciphertext": "...", "keyId": "key-20281001000000" }
 }
 ```
 
+Ballots are written by `POST /api/voter/ballots/{electionId}/submit` in the
+same transaction as the voter's `voted` flag and the receipt. Only the contest
+(`divisionId` or `stateId`) is readable. Formality (`isFormal`) and which part
+of a Senate ballot counts (`countedAs`) are worked out when the ballots are
+decrypted for publication (`backend/ballots.py`), so they are never stored.
+Keys are kept after rotation (`status: "retired"`), so every ballot can still be
+decrypted. Ballots stored before encryption keep plaintext `preferences`,
+`aboveTheLine`, `belowTheLine`, `isFormal` and `countedAs`, and are counted as
+they are.
+
 Ballots hold no voter reference and no timestamp, so they cannot be traced back
 to the voter, who only gains `voted: true` and `votedElections.{electionId}: true`.
+
+While voting, the voter record also holds the session (R-04): `voting: true`,
+`activeElectionId` and `sessionExpiresAt` (15 minutes after the session
+started). Submitting a ballot clears them.
 
 **Vote reconciliation (R-05).** Before an election moves from `counting` to
 `finalised`, and again before its results are published, the API checks that the

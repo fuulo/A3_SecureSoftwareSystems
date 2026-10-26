@@ -14,7 +14,7 @@ from backend.main import app
 from backend.rate_limit import limiter
 from backend.results import build_package, package_bytes, tally_house, tally_senate
 from backend.routers import public_results
-from backend.routers.voter_ballots import house_is_formal, senate_counted_as
+from backend.ballots import house_is_formal, senate_counted_as
 
 
 class FakeSnapshot:
@@ -200,7 +200,7 @@ def test_receipt_lookups_are_rate_limited(monkeypatch):
 
 
 @pytest.mark.parametrize(("method", "path", "body"), [
-    ("POST", "/api/voter/ballots", {"house": {"preferences": []}, "senate": {}}),
+    ("POST", "/api/voter/ballots/e1/submit", {"house": {"preferences": []}, "senate": {}}),
     ("POST", "/api/admin/elections/election_1/results/publish", None),
 ])
 def test_ballot_and_publish_endpoints_require_a_bearer_token(method, path, body):

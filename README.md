@@ -204,7 +204,8 @@ ARCHIVE_REQUIRED=true
 
 | Endpoint | Who | Purpose |
 | --- | --- | --- |
-| `POST /api/voter/ballots` | Enrolled voter (Firebase token) | Records House and Senate ballots and returns a one-time receipt code |
+| `POST /api/voter/ballots/{electionId}/start` | Enrolled voter (Firebase token, voter IP allowlist) | Starts a 15-minute voting session; refused if the voter has voted in this election or already has an active session |
+| `POST /api/voter/ballots/{electionId}/submit` | Voter with an active session | Validates the ballot, stores it encrypted (AES-256-GCM), marks the voter as voted and returns a one-time receipt code, all in one transaction |
 | `POST /api/admin/elections/{id}/results/publish` | Admin | Counts a finalised election, archives the package and receipt list for 7 years (R-06), then freezes the result package |
 | `POST /api/admin/elections/{id}/phase` with `{"to": "finalised"}` | Admin | Finalises only if voters marked voted, House ballots, Senate ballots and receipts all match (R-05); a mismatch is refused and logged |
 | `GET /api/public/results` | Anyone | Latest published results, their fingerprint and its hash algorithm (SHA-256 by default) |
@@ -237,7 +238,8 @@ real pages.
 #### 2. Seed a demo election
 
 `backend/seed_demo_results.py` creates a demo election, enrols demo voters,
-casts their ballots through the same code as `POST /api/voter/ballots`,
+casts their encrypted ballots through the same code as
+`POST /api/voter/ballots/{electionId}/submit` (without the voting session),
 finalises the election and publishes the results through the same code as the
 admin publish endpoint. It prints sample receipt codes and the published
 fingerprint with its algorithm (SHA-256 by default); keep that output for the

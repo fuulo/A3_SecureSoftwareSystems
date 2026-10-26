@@ -1,21 +1,30 @@
+"""Casting a ballot: the voting session and the single transaction that records a vote.
+
+The HTTP routes are in ``voter_ballot_session``. A voter first starts a voting
+session for an election (R-04), then submits one ballot. Submitting validates
+the ballot, stores it encrypted in the election's ``houseBallots`` and
+``senateBallots`` (``backend.ballots``), marks the voter as having voted in
+that election (R-05) and issues a hashed receipt (R-06), all in one
+transaction.
+"""
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 from google.cloud import firestore
 
+from backend import ballots
 from backend.audit import audit_standalone
 from backend.auth import verify_token
 from backend.firestore_client import db
 from backend.models import BallotSubmission
-from backend.rate_limit import limiter
 from backend.receipts import issue_receipt
 from backend.reconciliation import has_voted, voted_field
+from backend.security.encryption import EncryptionService
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/voter", tags=["voter-ballots"])
-SENATE_BTL_MINIMUM = 6  # savings provision: 6 boxes below the line is formal
+SESSION_DURATION_MINUTES = 15
 
 
 class BallotRejected(HTTPException):
@@ -37,6 +46,10 @@ async def current_voter(
     return voter
 
 
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def _usable(snapshot: Any) -> bool:
     data = snapshot.to_dict() or {}
     return data.get("withdrawn") is not True and data.get("excluded") is not True
@@ -49,38 +62,34 @@ def _unique_known(choices: list[str], known: set[str], label: str) -> None:
         raise BallotRejected(422, f"Ballot contains an unknown {label}", "unknown_choice")
 
 
-def house_is_formal(preferences: list[str], candidate_count: int) -> bool:
-    # Full preferential voting: every candidate must be numbered.
-    return candidate_count > 0 and len(preferences) == candidate_count
+def _check_voter(voter: dict[str, Any], election_id: str) -> None:
+    if voter.get("enrolmentStatus") != "enrolled":
+        raise BallotRejected(403, "Only enrolled voters can vote", "not_enrolled")
+    if has_voted(voter, election_id):
+        raise BallotRejected(409, "A ballot has already been recorded for you", "double_vote_attempt")
 
 
-def senate_counted_as(above: list[str], below: list[str], candidate_count: int) -> str | None:
-    """Which part of a senate ballot is counted, or None if the ballot is informal.
-
-    A formal below-the-line vote takes precedence over above-the-line boxes.
-    """
-    if below and len(below) >= min(SENATE_BTL_MINIMUM, candidate_count):
-        return "belowTheLine"
-    if above:
-        return "aboveTheLine"
-    return None
-
-
-def _open_election(tx: Any) -> Any:
-    opened = list(db.collection("elections").where("status", "==", "open").limit(2).stream(transaction=tx))
-    if len(opened) != 1:
+def _open_election(tx: Any, election_id: str) -> Any:
+    snapshot = db.collection("elections").document(election_id).get(transaction=tx)
+    election = (snapshot.to_dict() or {}) if snapshot.exists else {}
+    if election.get("status") != "open":
         raise BallotRejected(409, "Voting is not open", "election_not_open")
-    election = opened[0].to_dict() or {}
-    now = datetime.now(timezone.utc)
+    now = _now()
     open_at, close_at = election.get("openAt"), election.get("closeAt")
     if isinstance(open_at, datetime) and now < open_at:
         raise BallotRejected(409, "Voting has not started", "election_not_started")
     if isinstance(close_at, datetime) and now >= close_at:
         raise BallotRejected(409, "Voting has closed", "election_closed")
-    return opened[0].reference
+    return snapshot.reference
 
 
-def _house_ballot(tx: Any, election_ref: Any, voter: dict[str, Any], preferences: list[str]) -> dict[str, Any]:
+def _session_active(voter: dict[str, Any], election_id: str) -> bool:
+    expires_at = voter.get("sessionExpiresAt")
+    return (voter.get("voting") is True and voter.get("activeElectionId") == election_id
+            and isinstance(expires_at, datetime) and _now() < expires_at)
+
+
+def _house_choices(tx: Any, election_ref: Any, voter: dict[str, Any], preferences: list[str]) -> str:
     division_id = voter.get("divisionId")
     if not division_id:
         raise BallotRejected(409, "Your enrolment has no division", "no_division")
@@ -89,12 +98,10 @@ def _house_ballot(tx: Any, election_ref: Any, voter: dict[str, Any], preferences
         if (item.to_dict() or {}).get("chamber") == "house" and _usable(item)
     }
     _unique_known(preferences, candidates, "House candidate")
-    return {"divisionId": division_id, "preferences": preferences, "source": "electronic",
-            "isFormal": house_is_formal(preferences, len(candidates))}
+    return division_id
 
 
-def _senate_ballot(tx: Any, election_ref: Any, voter: dict[str, Any],
-                   above: list[str], below: list[str]) -> dict[str, Any]:
+def _senate_choices(tx: Any, election_ref: Any, voter: dict[str, Any], above: list[str], below: list[str]) -> str:
     state_id = voter.get("stateId")
     groups = {
         item.id for item in election_ref.collection("senateGroups").where("stateId", "==", state_id).stream(transaction=tx)
@@ -106,18 +113,56 @@ def _senate_ballot(tx: Any, election_ref: Any, voter: dict[str, Any],
     }
     _unique_known(above, groups, "Senate group")
     _unique_known(below, candidates, "Senate candidate")
-    counted_as = senate_counted_as(above, below, len(candidates))
-    return {"stateId": state_id, "aboveTheLine": above, "belowTheLine": below, "source": "electronic",
-            "isFormal": counted_as is not None, "countedAs": counted_as}
+    return state_id
 
 
-def record_ballot(voter_id: str, body: BallotSubmission, request: Request) -> dict[str, str]:
+def _audit_rejection(action: str, voter_id: str, voter_ref: Any, exc: BallotRejected,
+                     request: Request, election_id: str) -> None:
+    try:
+        audit_standalone(
+            actor={"staffId": voter_id, "role": "voter"}, action=action,
+            category="voting", target_type="voter", target_id=voter_id,
+            target_path=voter_ref.path, before=None, after=None,
+            outcome="denied", reason=exc.reason, request=request, election_id=election_id,
+        )
+    except Exception:
+        logger.exception("Unable to record rejected %s", action)
+
+
+def start_session(voter_id: str, election_id: str, request: Request) -> datetime:
+    """Mark the voter as voting in this election for SESSION_DURATION_MINUTES (R-04)."""
+    voter_ref = db.collection("voters").document(voter_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def start(tx: Any) -> datetime:
+        voter = voter_ref.get(transaction=tx).to_dict() or {}
+        _check_voter(voter, election_id)
+        if voter.get("voting") is True and _session_active(voter, voter.get("activeElectionId") or ""):
+            raise BallotRejected(409, "You already have an active voting session", "session_already_active")
+        _open_election(tx, election_id)
+        expires_at = _now() + timedelta(minutes=SESSION_DURATION_MINUTES)
+        tx.update(voter_ref, {"voting": True, "activeElectionId": election_id, "sessionExpiresAt": expires_at})
+        return expires_at
+
+    try:
+        return start(transaction)
+    except BallotRejected as exc:
+        _audit_rejection("ballot.session.rejected", voter_id, voter_ref, exc, request, election_id)
+        raise
+    except Exception as exc:
+        logger.exception("Voting session start failed")
+        raise HTTPException(status_code=400, detail="Unable to start your voting session") from exc
+
+
+def record_ballot(voter_id: str, election_id: str, body: BallotSubmission, request: Request, *,
+                  encryption: EncryptionService, require_session: bool = True) -> dict[str, str]:
     """Record one voter's House and Senate ballots and return their receipt.
 
-    Ballots are stored without any voter reference or timestamp, and the voter
-    record only gains ``voted: true`` and the election it voted in, so a ballot
-    cannot be traced to a voter. The election is recorded so that voters marked
-    voted can be reconciled against its ballots (see ``backend.reconciliation``).
+    Ballots are stored encrypted, without any voter reference or timestamp, and
+    the voter record only gains ``voted: true`` and the election it voted in, so
+    a ballot cannot be traced to a voter. ``require_session`` is turned off only
+    by trusted internal callers such as the demo seed.
     """
     voter_ref = db.collection("voters").document(voter_id)
     transaction = db.transaction()
@@ -125,39 +170,26 @@ def record_ballot(voter_id: str, body: BallotSubmission, request: Request) -> di
     @firestore.transactional
     def cast(tx: Any) -> tuple[str, datetime]:
         voter = voter_ref.get(transaction=tx).to_dict() or {}
-        if voter.get("enrolmentStatus") != "enrolled":
-            raise BallotRejected(403, "Only enrolled voters can vote", "not_enrolled")
-        election_ref = _open_election(tx)
-        if has_voted(voter, election_ref.id):
-            raise BallotRejected(409, "A ballot has already been recorded for you", "double_vote_attempt")
-        house = _house_ballot(tx, election_ref, voter, body.house.preferences)
-        senate = _senate_ballot(tx, election_ref, voter, body.senate.aboveTheLine, body.senate.belowTheLine)
-        tx.create(election_ref.collection("houseBallots").document(), house)
-        tx.create(election_ref.collection("senateBallots").document(), senate)
-        tx.update(voter_ref, {"voted": True, voted_field(election_ref.id): True})
-        return issue_receipt(tx, election_ref.id)
+        _check_voter(voter, election_id)
+        if require_session and not _session_active(voter, election_id):
+            raise BallotRejected(409, "Your voting session has expired or was not started", "no_active_session")
+        election_ref = _open_election(tx, election_id)
+        division_id = _house_choices(tx, election_ref, voter, body.house.preferences)
+        state_id = _senate_choices(tx, election_ref, voter, body.senate.aboveTheLine, body.senate.belowTheLine)
+        tx.create(election_ref.collection("houseBallots").document(),
+                  ballots.house_document(division_id, body.house.preferences, encryption))
+        tx.create(election_ref.collection("senateBallots").document(),
+                  ballots.senate_document(state_id, body.senate.aboveTheLine, body.senate.belowTheLine, encryption))
+        tx.update(voter_ref, {"voted": True, voted_field(election_id): True,
+                              "voting": False, "activeElectionId": None, "sessionExpiresAt": None})
+        return issue_receipt(tx, election_id)
 
     try:
         receipt, recorded_at = cast(transaction)
     except BallotRejected as exc:
-        try:
-            audit_standalone(
-                actor={"staffId": voter_id, "role": "voter"}, action="ballot.rejected",
-                category="voting", target_type="voter", target_id=voter_id,
-                target_path=voter_ref.path, before=None, after=None,
-                outcome="denied", reason=exc.reason, request=request,
-            )
-        except Exception:
-            logger.exception("Unable to record rejected ballot")
+        _audit_rejection("ballot.rejected", voter_id, voter_ref, exc, request, election_id)
         raise
     except Exception as exc:
         logger.exception("Ballot submission failed")
         raise HTTPException(status_code=400, detail="Unable to record your ballot") from exc
-    return {"receipt": receipt, "recordedAt": recorded_at.isoformat()}
-
-
-@router.post("/ballots", status_code=201)
-@limiter.limit("10/minute")
-def cast_ballot(body: BallotSubmission, request: Request,
-                voter: dict[str, Any] = Depends(current_voter)) -> dict[str, str]:
-    return record_ballot(voter["voterId"], body, request)
+    return {"receipt": receipt, "recordedAt": recorded_at.isoformat(), "electionId": election_id}
