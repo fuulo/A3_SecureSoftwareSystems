@@ -6,6 +6,7 @@ import DisclaimerBar from "../components/disclaimer";
 import Header from "../components/header";
 import Footer from "../components/footer";
 import SignOutOnLeave from "../components/signoutonleave";
+import InactivityGuard from "../components/inactivityguard";
 
 // Page font
 const inter = Inter({
@@ -28,6 +29,7 @@ export default function RootLayout({
       <body>
         <Suspense fallback={null}>
           <SignOutOnLeave />
+          <InactivityGuard />
         </Suspense>
         <div
           className={`${inter.className} relative min-h-screen bg-[#EAF3FC] text-[15px] text-[#222]`}

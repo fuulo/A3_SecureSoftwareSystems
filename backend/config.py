@@ -25,6 +25,9 @@ TRUST_PROXY_HEADERS = _as_bool(os.getenv("TRUST_PROXY_HEADERS"))
 TLS_CERT_FILE = os.getenv("TLS_CERT_FILE", "certs/localhost.pem")
 TLS_KEY_FILE = os.getenv("TLS_KEY_FILE", "certs/localhost-key.pem")
 TLS_LOG_FILE = os.getenv("TLS_LOG_FILE", "logs/tls-security-api.log")
+# Server-side idle limit: the browser signs out after 2 minutes, and renews at
+# most every 30 seconds, so the server allows 2.5 minutes
+SESSION_IDLE_SECONDS = int(os.getenv("SESSION_IDLE_SECONDS", "150"))
 SMTP_HOST = os.getenv("SMTP_HOST")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USERNAME = os.getenv("SMTP_USERNAME")

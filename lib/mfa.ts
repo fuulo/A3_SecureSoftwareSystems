@@ -65,12 +65,14 @@ export function getPendingMfaDeadline(): number | null {
 export const MFA_TIMEOUT_REASON = "mfa-timeout";
 export const MFA_REQUIRED_REASON = "mfa-required";
 export const ACCOUNT_LOCKED_REASON = "account-locked";
+export const SESSION_TIMEOUT_REASON = "session-timeout";
 
 // A Map, so a crafted ?reason= cannot pick up built-in object properties
 export const LOGIN_NOTICES = new Map<string, string>([
   [MFA_TIMEOUT_REASON, "Your verification timed out. Please log in again."],
   [MFA_REQUIRED_REASON, "Please log in and complete text message verification to continue."],
   [ACCOUNT_LOCKED_REASON, "Too many failed attempts. This account is temporarily locked."],
+  [SESSION_TIMEOUT_REASON, "You were signed out after 2 minutes of inactivity."],
 ]);
 
 // Voter pages need a sign-in that included the text message code. Firebase

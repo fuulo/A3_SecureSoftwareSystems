@@ -10,6 +10,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from firebase_admin import auth
 from google.cloud import firestore
 
+from backend import sessions
 from backend.audit import audit_standalone
 from backend.config import TRUST_PROXY_HEADERS
 from backend.firestore_client import db
@@ -26,10 +27,11 @@ _IP_CACHE_TTL = 30
 _TOKEN_CLOCK_SKEW_SECONDS = 10
 
 
-async def verify_token(
+async def verify_firebase_token(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
 ) -> dict[str, Any]:
+    """Checks the Firebase ID token only. Protected endpoints use verify_token."""
     if not credentials:
         raise HTTPException(status_code=401, detail="Authentication required")
     try:
@@ -104,6 +106,15 @@ async def verify_token(
             detail="Authentication required",
         )
 
+    return claims
+
+
+async def verify_token(
+    request: Request,
+    claims: dict[str, Any] = Depends(verify_firebase_token),
+) -> dict[str, Any]:
+    """A valid Firebase ID token plus an unexpired session (inactivity timeout)."""
+    sessions.check_session(request, claims)
     return claims
 
 

@@ -50,6 +50,9 @@ class FakeDocument:
             raise NotFound(self.path)
         self._db.store[self.path] = {**self._db.store[self.path], **copy.deepcopy(data)}
 
+    def delete(self) -> None:
+        self._db.store.pop(self.path, None)
+
     def collection(self, name: str) -> "FakeCollection":
         return FakeCollection(self._db, f"{self.path}/{name}")
 
@@ -63,8 +66,14 @@ class FakeQuery:
         state = {"filters": self._filters, "order": self._order, "limit": self._limit, **changes}
         return FakeQuery(self._db, self._path, **state)
 
+    _OPERATORS = {
+        "==": lambda left, right: left == right,
+        "in": lambda left, right: left in right,
+        "<=": lambda left, right: left <= right,
+    }
+
     def where(self, field: str, op: str, value: Any) -> "FakeQuery":
-        assert op in {"==", "in"}, f"fake does not support {op}"
+        assert op in self._OPERATORS, f"fake does not support {op}"
         return self._clone(filters=self._filters + ((field, op, value),))
 
     def order_by(self, field: str, direction: str = "ASCENDING") -> "FakeQuery":
@@ -77,7 +86,7 @@ class FakeQuery:
         self._db.check_read(transaction)
         rows = [(path, data) for path, data in self._db.store.items() if _parent(path) == self._path]
         for field, op, value in self._filters:
-            rows = [(p, d) for p, d in rows if field in d and (d[field] == value if op == "==" else d[field] in value)]
+            rows = [(p, d) for p, d in rows if field in d and self._OPERATORS[op](d[field], value)]
         if self._order:
             field, descending = self._order
             rows = sorted([(p, d) for p, d in rows if field in d], key=lambda row: row[1][field], reverse=descending)
@@ -111,11 +120,17 @@ class FakeTransaction:
     def update(self, ref: FakeDocument, data: dict[str, Any]) -> None:
         self.writes.append(("update", ref.path, data))
 
+    def delete(self, ref: FakeDocument) -> None:
+        self.writes.append(("delete", ref.path, None))
+
     def commit(self) -> None:
         store = self._db.store
         staged = dict(store)
         now = self._db.tick()
         for kind, path, data in self.writes:
+            if kind == "delete":
+                staged.pop(path, None)
+                continue
             resolved = {key: now if value is firestore.SERVER_TIMESTAMP else value for key, value in data.items()}
             if kind == "create" and path in staged:
                 raise AlreadyExists(path)

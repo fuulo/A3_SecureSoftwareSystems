@@ -1,4 +1,6 @@
+import asyncio
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 
@@ -10,6 +12,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 
+from backend import sessions
 from backend.config import ALLOWED_ORIGINS
 from backend.auth import staff_access
 from backend.firestore_client import db
@@ -24,6 +27,7 @@ from backend.routers import (
     employee_candidates,
     employee_voters,
     public_results,
+    session,
     voter_ballot_session,
     voter_ballots,
     voter_registration,
@@ -31,14 +35,24 @@ from backend.routers import (
 
 
 logging.basicConfig(level=logging.INFO)
-app = FastAPI(title="E-voting Staff API")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Ends sessions left idle past the inactivity limit (see backend/sessions.py)
+    sweep = asyncio.create_task(sessions.sweep_forever())
+    yield
+    sweep.cancel()
+
+
+app = FastAPI(title="E-voting Staff API", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Session-Id"],
+    allow_headers=["Authorization", "Content-Type", "X-Session-Id", sessions.HEADER],
 )
 
 
@@ -54,6 +68,7 @@ app.include_router(voter_registration.router)
 app.include_router(voter_ballot_session.router)
 app.include_router(public_results.router)
 app.include_router(auth_lockout.router)
+app.include_router(session.router)
 
 
 

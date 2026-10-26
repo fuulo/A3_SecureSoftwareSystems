@@ -1,4 +1,10 @@
 import { auth } from "@/lib/firebase";
+import {
+  ensureSessionToken,
+  isSessionFailure,
+  notifySessionEnded,
+  SESSION_HEADER,
+} from "@/lib/session";
 
 export class ApiError extends Error {
   status: number;
@@ -31,6 +37,13 @@ export async function apiRequest<T>(
     throw new ApiError(401, "Sign in to continue.");
   }
   const token = await user.getIdToken();
+  // Required by every signed-in endpoint for the inactivity timeout
+  let sessionToken: string;
+  try {
+    sessionToken = await ensureSessionToken();
+  } catch (error) {
+    throw new ApiError(401, error instanceof Error ? error.message : "Sign in to continue.");
+  }
   let sessionId: string | undefined;
   if (typeof window !== "undefined") {
     sessionId = sessionStorage.getItem("staffSessionId") ?? undefined;
@@ -45,11 +58,21 @@ export async function apiRequest<T>(
       "Content-Type": "application/json",
       ...options.headers,
       Authorization: `Bearer ${token}`,
+      [SESSION_HEADER]: sessionToken,
       ...(sessionId ? { "X-Session-Id": sessionId } : {}),
     },
     cache: "no-store",
   });
   if (response.status === 401) {
+    const detail = await response
+      .clone()
+      .json()
+      .then((body: { detail?: unknown }) => body?.detail)
+      .catch(() => undefined);
+    if (isSessionFailure(detail)) {
+      notifySessionEnded();
+      throw new ApiError(401, "Your session has ended. Please sign in again.");
+    }
     requestLoginRedirect();
     throw new ApiError(401, "Your session has expired. Please sign in again.");
   }

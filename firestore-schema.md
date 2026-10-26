@@ -37,6 +37,7 @@
 /receipts/{receiptHash}                ← ballot receipts (hash only)
 /publishedResults/{electionId}         ← frozen public result package
 /authLockouts/{emailHash}              ← failed sign-in counts and account locks
+/sessions/{sessionId}                  ← signed-in sessions, for the inactivity timeout
 /auditLogs/{logId}
 ```
 
@@ -480,6 +481,39 @@ failed sign-in, registered or not, so responses reveal nothing about accounts.
   "lastFailureAt": "timestamp",
   "lockedUntil": "timestamp",     // set on every 3rd failure: 5 min, then doubling, up to 60 min
   "disabledUid": "firebaseUid"    // the Firebase account this lock disabled; null once re-enabled
+}
+```
+
+## Sessions
+
+### `sessions/{sessionId}`
+
+Written only by the API (`backend/sessions.py`); clients have no access. One
+document per signed-in session, deleted when the session ends: on sign-out, or
+when it was not renewed in time (which also revokes the user's Firebase refresh
+tokens).
+
+```jsonc
+{
+  "uid": "firebaseUid",
+  "authTime": 1793000000,          // the Firebase sign-in this session belongs to
+  "startedAt": "timestamp",
+  "lastActivityAt": "timestamp",   // last renewal
+  "expiresAt": "timestamp"         // lastActivityAt + SESSION_IDLE_SECONDS (150 s)
+}
+```
+
+### `config/sessionSigning`
+
+The key that signs session tokens (HS256). Created by the API the first time it
+is needed and read once per API start; clients have no access. Deleting it
+replaces the key on the next start and ends every session.
+
+```jsonc
+{
+  "key": "base64url random, 48 bytes",
+  "algorithm": "HS256",
+  "createdAt": "timestamp"
 }
 ```
 

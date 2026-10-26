@@ -324,6 +324,40 @@ attempts**: a wrong password on `/login` or a wrong SMS code on `/verify`.
   directly against Firebase, bypassing these pages, are not counted; Firebase's
   own throttling (`auth/too-many-requests`) still applies to them.
 
+## Inactivity timeout
+
+Voter and staff sessions end after **2 minutes of inactivity**, enforced in the
+browser and on the server.
+
+| Where | What happens |
+| --- | --- |
+| Browser ([components/inactivityguard.tsx](./components/inactivityguard.tsx)) | On every `/voter` and `/staff` page, clicks, typing, scrolling and pointer movement count as activity, shared across open tabs. After 1:30 a warning ("Are you still there?") counts down; at 2:00 the user is signed out and sent to `/login?reason=session-timeout` |
+| API ([backend/sessions.py](./backend/sessions.py)) | Every signed-in endpoint requires an `X-Session-Token`: a JWT signed by the API that expires 2.5 minutes after it was issued and is renewed while the user is active. An expired token is refused, and a sweep every 30 seconds ends sessions nobody renewed |
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/session/start` | Exchange a Firebase ID token for a session token. Allowed only within 5 minutes of signing in, so an ended session cannot be replaced without signing in again |
+| `POST /api/session/renew` | Extend the session; called at most every 30 seconds while the user is active |
+| `POST /api/session/end` | Close the session on sign-out |
+
+- **Ending an idle session** revokes the user's Firebase refresh tokens, so the
+  API rejects their existing ID tokens and Firebase stops issuing new ones. This
+  signs the user out on all their devices. Each timeout is audited as
+  `auth.sessionTimeout`.
+- **Why 2.5 minutes on the server:** the browser renews at most every 30
+  seconds, so the server's record of activity can be up to 30 seconds old. The
+  browser always ends the session first; the server guarantees it ends.
+- **Signing key:** generated automatically the first time the API needs it and
+  stored in Firestore at `config/sessionSigning`, which only the API can read.
+  There is nothing to configure, and restarts keep sessions valid. To replace
+  the key, delete that document and restart the API; every session then ends.
+  `SESSION_IDLE_SECONDS` in `backend/.env` (default `150`) sets the server limit.
+- **Limitation:** voter pages read Firestore directly. Firestore cannot check
+  the session, so a tampered page could still read the voter's own data until
+  their current Firebase ID token expires (at most 1 hour after the session
+  ended). The voter registration endpoint uses its own sign-in check and does
+  not require a session.
+
 ## Data and security notes
 
 Firestore structure is documented in [firestore-schema.md](./firestore-schema.md).
