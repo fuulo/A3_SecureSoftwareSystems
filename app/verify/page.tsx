@@ -33,7 +33,7 @@ const RESEND_SECONDS = 30;
 const inputStyle =
   "w-full rounded border border-slate-400 px-3 py-2 text-center text-[28px] font-semibold tracking-[0.4em] focus:outline-none focus:ring-2 focus:ring-[#1f538d]";
 
-const linkStyle = "text-[13px] text-[#1b4779] hover:underline";
+const linkStyle = "text-[16px] text-[#1b4779] hover:underline";
 
 type Step = "send" | "code";
 
@@ -328,8 +328,13 @@ export default function AuthenticationCodePage() {
 
         {step === "code" && (
           <>
-            <p className="mb-8 text-center text-slate-600">
+            <p className="mb-4 text-center text-slate-600">
               Enter the {CODE_LENGTH}-digit code sent to {maskedPhone}.
+            </p>
+
+            <p className="mb-6 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-center text-[13px] text-amber-800">
+              If you are using the testing phone number,<br />your verification code is{" "}
+              <strong>123456</strong>.
             </p>
 
             <form onSubmit={handleSubmit} className="space-y-5">

@@ -248,8 +248,7 @@ export default function MfaSetupPage() {
             </p>
 
             <p className="mb-6 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-[13px] text-amber-800">
-              This is a mock system. Use the test phone number given by your
-              team.
+              This is a mock system and does not send out genuine SMS.<br />For testing purpose, please use <strong>0412 345 678</strong> or <strong>+61 412 345 678</strong><br />so that you can use the preset verification code.
             </p>
 
             <form onSubmit={handleSendCode} noValidate className="space-y-5">

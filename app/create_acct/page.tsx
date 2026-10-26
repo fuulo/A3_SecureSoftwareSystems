@@ -579,10 +579,10 @@ export default function CreateAccountPage() {
         <h1
           className={`${mainHeader} mb-2 text-center`}
         >
-          Create Voter Account
+          Create A Voter Account
         </h1>
 
-        <p className="mb-8 text-center text-slate-600">
+        <p className="mb-8 text-[18px] text-center text-slate-600">
           Enter your details below to create your
           voter account.
         </p>
@@ -897,7 +897,7 @@ export default function CreateAccountPage() {
               )}
 
               <p className="mt-1 text-xs text-slate-500">
-                Use at least {MIN_PASSWORD_LENGTH} characters.
+                Your password should be at least <strong>{MIN_PASSWORD_LENGTH} characters long</strong>.
               </p>
             </div>
 

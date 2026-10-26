@@ -34,7 +34,7 @@ const inputStyle =
   "w-full rounded border border-slate-400 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#1f538d]";
 
 const linkStyle =
-  "text-[13px] text-[#1b4779] hover:underline";
+  "text-[16px] text-[#1b4779] hover:underline";
 
 function getLoginErrorMessage(
   firebaseError: unknown
@@ -263,14 +263,14 @@ export default function LoginPage() {
             href="/forgot_pw"
             className={linkStyle}
           >
-            Forgot password?
+            Forgot Your Password?
           </Link>
 
           <Link
             href="/create_acct"
             className={linkStyle}
           >
-            Create account
+            Create a Voter Account
           </Link>
         </div>
 
@@ -279,7 +279,7 @@ export default function LoginPage() {
             href="/"
             className={linkStyle}
           >
-            Back to home page
+            Back to Home Page
           </Link>
         </div>
       </section>
