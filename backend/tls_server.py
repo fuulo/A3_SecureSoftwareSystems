@@ -20,6 +20,7 @@ from pathlib import Path
 
 import uvicorn
 from dotenv import load_dotenv
+from uvicorn._subprocess import get_subprocess
 from uvicorn.supervisors import ChangeReload
 
 logger = logging.getLogger("backend.tls")
@@ -231,6 +232,25 @@ class TlsServer(uvicorn.Server):
         self.started = True
 
 
+class TerminatingReload(ChangeReload):
+    """--reload that restarts the worker reliably on Windows.
+
+    uvicorn restarts a Windows worker by sending it Ctrl+C and waiting for it to
+    exit. With Python 3.14 that worker never exits, so the API stops answering
+    after the first code change, git pull or checkout. Terminate it instead, as
+    uvicorn already does on other platforms. Stopping with Ctrl+C is unchanged.
+    """
+
+    def restart(self) -> None:
+        if sys.platform != "win32":
+            super().restart()
+            return
+        self.process.terminate()
+        self.process.join()
+        self.process = get_subprocess(config=self.config, target=self.target, sockets=self.sockets)
+        self.process.start()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the API over TLS 1.3 only.")
     parser.add_argument("--host", default="127.0.0.1")
@@ -260,7 +280,7 @@ def main() -> None:
     )
     server = TlsServer(config, cert_file=TLS_CERT_FILE, key_file=TLS_KEY_FILE, log_file=TLS_LOG_FILE)
     if config.should_reload:
-        ChangeReload(config, target=server.run, sockets=[config.bind_socket()]).run()
+        TerminatingReload(config, target=server.run, sockets=[config.bind_socket()]).run()
     else:
         server.run()
 
