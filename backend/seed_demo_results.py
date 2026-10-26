@@ -2,7 +2,9 @@
 
 Runs the same code paths as the API (``record_ballot`` and ``publish_results``)
 so the Published Results, Verify receipt and Verify result package pages can be
-exercised end to end without logging in as voters.
+exercised end to end without logging in as voters. Ballots are encrypted with
+the project's encryption keys, as the API does; only the voting session (which
+needs a signed-in voter) is skipped.
 
     python -m backend.seed_demo_results                  # cast ballots and publish
     python -m backend.seed_demo_results --skip-publish   # stop before publishing
@@ -26,6 +28,7 @@ from backend.models import BallotSubmission
 from backend.reconciliation import describe, reconcile_votes
 from backend.results import publish_results
 from backend.routers.voter_ballots import record_ballot
+from backend.security.key_management import get_encryption_service
 
 ACTOR = {"staffId": "system_seed", "role": "system"}
 GIVEN = ["Alex", "Sam", "Jordan", "Priya", "Mei", "Daniel", "Aisha", "Tom", "Lena", "Ravi", "Chloe", "Noah"]
@@ -166,9 +169,12 @@ def main() -> int:
     election_id = create_election(rng)
     voter_ids = create_voters(rng, args.voters)
     set_status(election_id, "open")
+    encryption = get_encryption_service()
     receipts = []
     for voter_id in voter_ids:
-        receipts.append(record_ballot(voter_id, random_ballot(rng, election_id, voter_id), _request())["receipt"])
+        cast = record_ballot(voter_id, election_id, random_ballot(rng, election_id, voter_id), _request(),
+                             encryption=encryption, require_session=False)
+        receipts.append(cast["receipt"])
     db.collection("elections").document(election_id).update({"closedAt": firestore.SERVER_TIMESTAMP})
     # The same check the API runs before finalisation (R-05).
     reconciliation = reconcile_votes(election_id)

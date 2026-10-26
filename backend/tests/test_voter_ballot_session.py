@@ -1,390 +1,339 @@
-from fastapi import HTTPException, status
+import os
+
+os.environ.setdefault("FIREBASE_PROJECT_ID", "demo-staff-dashboard")
+
+import json
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from google.cloud import firestore
+from starlette.requests import Request
 
-from backend.auth import enforce_voter_ip_allowlist
+from backend import archive, audit, auth, receipts, reconciliation, results
+from backend.auth import enforce_voter_ip_allowlist, verify_token
 from backend.main import app
-from backend.routers import voter_ballot_session
-from backend.routers.voter_ballot_session import get_current_firebase_user
-from backend.security.encryption import EncryptedValue
+from backend.rate_limit import limiter
+from backend.routers import voter_ballot_session, voter_ballots
+from backend.security.encryption import EncryptionService, generate_key
+from backend.tests.fake_firestore import FakeDb, fake_transactional
+
+ELECTION = "e1"
+START_URL = f"/api/voter/ballots/{ELECTION}/start"
+SUBMIT_URL = f"/api/voter/ballots/{ELECTION}/submit"
+# Every House candidate numbered; below the line covers all Senate candidates
+BALLOT = {"house": {"preferences": ["h2", "h1"]}, "senate": {"aboveTheLine": [], "belowTheLine": ["s1", "s2"]}}
 
 
-ELECTION_ID = "election_1"
-START_URL = f"/api/voter/ballots/{ELECTION_ID}/start"
-SUBMIT_URL = f"/api/voter/ballots/{ELECTION_ID}/submit"
+class Env:
+    def __init__(self, db: FakeDb, encryption: EncryptionService) -> None:
+        self.db, self.store, self.encryption = db, db.store, encryption
+        self.uid = "uid_1"
+        self.client = TestClient(app)
 
-VALID_BALLOT = {
-    "house": {
-        "preferences": ["candidate_1", "candidate_2"],
-    },
-    "senate": {
-        "aboveTheLine": ["group_1"],
-        "belowTheLine": [],
-    },
-}
+    def post(self, path: str, body: dict | None = None, uid: str = "uid_1"):
+        self.uid = uid
+        return self.client.post(path, json=body)
 
+    def voter(self, voter_id: str = "v1") -> dict:
+        return self.store[f"voters/{voter_id}"]
 
-class FakeDocumentSnapshot:
-    def __init__(self, reference):
-        self.reference = reference
+    def docs(self, collection: str) -> list[dict]:
+        return [data for path, data in self.store.items() if path.startswith(collection + "/")]
 
-    @property
-    def exists(self) -> bool:
-        return self.reference.exists
-
-    def to_dict(self) -> dict:
-        return self.reference.data
+    def audit_actions(self) -> list[tuple[str, str | None]]:
+        entries = sorted(self.docs("auditLogs"), key=lambda entry: entry["seq"])
+        return [(entry["action"], entry["reason"]) for entry in entries]
 
 
-class FakeDocumentReference:
-    def __init__(
-        self,
-        document_id: str,
-        data: dict | None = None,
-        exists: bool = True,
-    ):
-        self.id = document_id
-        self.data = data or {}
-        self.exists = exists
-        self.updates = []
-        self.created_documents = []
+@pytest.fixture
+def env(monkeypatch):
+    db = FakeDb()
+    now = datetime.now(timezone.utc)
+    store = db.store
+    store[f"elections/{ELECTION}"] = {"name": "Federal", "status": "open", "timezone": "Australia/Melbourne",
+                                      "openAt": now - timedelta(hours=1), "closeAt": now + timedelta(hours=1)}
+    store[f"elections/{ELECTION}/divisions/div_vic"] = {"name": "Melbourne", "stateId": "VIC", "seatCount": 1}
+    store[f"elections/{ELECTION}/senateRegions/VIC"] = {"name": "Victoria", "senatorsToElect": 6}
+    store[f"elections/{ELECTION}/senateGroups/g1"] = {"stateId": "VIC", "displayName": "Group A",
+                                                      "candidateOrder": ["s1", "s2"]}
+    for candidate_id, chamber in (("h1", "house"), ("h2", "house"), ("s1", "senate"), ("s2", "senate")):
+        store[f"elections/{ELECTION}/candidates/{candidate_id}"] = {
+            "name": candidate_id, "chamber": chamber, "divisionId": "div_vic" if chamber == "house" else None,
+            "stateId": "VIC", "groupId": "g1" if chamber == "senate" else None,
+        }
+    for number in (1, 2):
+        store[f"voters/v{number}"] = {"authUid": f"uid_{number}", "enrolmentStatus": "enrolled",
+                                      "divisionId": "div_vic", "stateId": "VIC", "voted": False}
 
-    def get(self, transaction=None):
-        return FakeDocumentSnapshot(self)
+    for module in (voter_ballots, receipts, audit, reconciliation, results, auth):
+        monkeypatch.setattr(module, "db", db)
+    monkeypatch.setattr(firestore, "transactional", fake_transactional)
+    encryption = EncryptionService({"k1": generate_key()}, "k1")
+    monkeypatch.setattr(voter_ballot_session, "get_encryption_service", lambda: encryption)
+    monkeypatch.setattr(results, "get_encryption_service", lambda: encryption)
+    for name, value in {"B2_KEY_ID": None, "ARCHIVE_REQUIRED": False}.items():
+        monkeypatch.setattr(archive, name, value)
 
-    def update(self, values):
-        self.updates.append(values)
-        self.data.update(values)
-
-    def set(self, values):
-        self.created_documents.append(values)
-        self.data.update(values)
-
-    def collection(self, name):
-        return FakeCollection()
-
-
-class FakeCollection:
-    def __init__(self, documents=None):
-        self.documents = documents or {}
-
-    def document(self, document_id=None):
-        if document_id:
-            return self.documents.get(
-                document_id,
-                FakeDocumentReference(document_id, exists=False),
-            )
-
-        new_id = f"generated_{len(self.documents) + 1}"
-        reference = FakeDocumentReference(new_id, exists=False)
-        self.documents[new_id] = reference
-        return reference
-
-    def where(self, *_args, **_kwargs):
-        return self
-
-    def limit(self, _count):
-        return self
-
-    def stream(self):
-        return [
-            FakeDocumentSnapshot(reference)
-            for reference in self.documents.values()
-            if reference.exists
-        ]
-
-
-class FakeTransaction:
-    def get(self, reference, transaction=None):
-        return reference.get(transaction=self)
-
-    def update(self, reference, values):
-        reference.update(values)
-
-    def set(self, reference, values):
-        reference.set(values)
-
-
-class FakeFirestore:
-    def __init__(self, voter=None, election=None):
-        self.voter = voter
-        self.election = election
-        self.voters = FakeCollection(
-            {"voter_1": voter} if voter else {}
-        )
-        self.elections = FakeCollection(
-            {ELECTION_ID: election} if election else {}
-        )
-        self.ballots = FakeCollection()
-        self.audit_logs = FakeCollection()
-        self.security_alerts = FakeCollection()
-
-    def collection(self, name):
-        if name == "voters":
-            return self.voters
-
-        if name == "elections":
-            return self.elections
-
-        if name == "ballots":
-            return self.ballots
-
-        if name == "auditLogs":
-            return self.audit_logs
-
-        if name == "securityAlerts":
-            return self.security_alerts
-
-        return FakeCollection()
-
-    def transaction(self):
-        return FakeTransaction()
-
-
-class FakeEncryptionService:
-    def encrypt(self, value):
-        return EncryptedValue(
-            ciphertext=f"encrypted::{value}",
-            keyId="key_1",
-        )
-
-
-def approved_voter(**overrides):
-    data = {
-        "authUid": "uid_1",
-        "enrolmentStatus": "approved",
-        "eligibilityStatus": "approved",
-        "voted": False,
-        "voting": False,
-        "votedElections": {},
-        "activeElectionId": None,
-    }
-    data.update(overrides)
-    return FakeDocumentReference("voter_1", data)
-
-
-def open_election():
-    return FakeDocumentReference(
-        ELECTION_ID,
-        {
-            "status": "open",
-            "phase": "open",
-        },
-    )
-
-
-def configure_voter(voter, election=None):
-    fake_db = FakeFirestore(
-        voter=voter,
-        election=election or open_election(),
-    )
-
-    voter_ballot_session.firestore.client = lambda: fake_db
-    voter_ballot_session.get_encryption_service = lambda: FakeEncryptionService()
-
-    app.dependency_overrides[get_current_firebase_user] = lambda: {
-        "uid": "uid_1",
-        "email": "voter@example.com",
-    }
+    environment = Env(db, encryption)
+    app.dependency_overrides[verify_token] = lambda: {"uid": environment.uid}
     app.dependency_overrides[enforce_voter_ip_allowlist] = lambda: None
-
-    return fake_db
-
-
-def use_unauthenticated_client():
-    def raise_unauthorised():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired authentication token",
-        )
-
-    app.dependency_overrides[get_current_firebase_user] = raise_unauthorised
-    app.dependency_overrides[enforce_voter_ip_allowlist] = lambda: None
+    limiter.reset()
+    yield environment
+    app.dependency_overrides.clear()
+    limiter.reset()
 
 
-def use_unapproved_voter_ip():
-    app.dependency_overrides[enforce_voter_ip_allowlist] = (
-        enforce_voter_ip_allowlist
-    )
+def _cast(env: Env, uid: str = "uid_1", body: dict = BALLOT):
+    assert env.post(START_URL, uid=uid).status_code == 200
+    return env.post(SUBMIT_URL, body, uid=uid)
 
 
-def test_start_voting_session_succeeds_for_eligible_voter():
-    voter = approved_voter()
-    configure_voter(voter)
+# ------------------------------------------------------------ ballot paper
 
-    response = TestClient(app).post(START_URL)
+CURRENT_URL = "/api/voter/ballots/current"
+
+
+def test_ballot_paper_lists_the_voters_contests_in_ballot_order(env):
+    base = f"elections/{ELECTION}"
+    env.store[f"{base}/parties/p1"] = {"name": "Party One"}
+    env.store[f"{base}/candidates/h1"]["ballotPosition"] = 2
+    env.store[f"{base}/candidates/h2"].update({"ballotPosition": 1, "partyId": "p1"})
+    env.store[f"{base}/candidates/h3"] = {"name": "h3", "chamber": "house", "divisionId": "div_vic",
+                                          "withdrawn": True}
+    env.store[f"{base}/candidates/s3"] = {"name": "s3", "chamber": "senate", "stateId": "VIC", "groupId": None}
+    env.store[f"{base}/senateGroups/g0"] = {"stateId": "VIC", "candidateOrder": []}
+    env.store[f"{base}/senateGroups/g9"] = {"stateId": "NSW", "candidateOrder": ["x1"]}
+
+    response = env.client.get(CURRENT_URL)
 
     assert response.status_code == 200
-    assert response.json()["voting"] is True
-    assert voter.data["voting"] is True
-    assert voter.data["activeElectionId"] == ELECTION_ID
+    paper = response.json()
+    assert paper["election"]["id"] == ELECTION
+    assert paper["voter"] == {"hasVoted": False, "sessionExpiresAt": None}
+    assert paper["house"]["divisionName"] == "Melbourne"
+    assert paper["house"]["candidates"] == [{"id": "h2", "name": "h2", "party": "Party One"},
+                                            {"id": "h1", "name": "h1", "party": "Independent"}]
+    assert paper["senate"]["regionName"] == "Victoria" and paper["senate"]["minimumBelow"] == 6
+    assert [(g["id"], [c["id"] for c in g["candidates"]]) for g in paper["senate"]["groups"]] == [
+        ("g1", ["s1", "s2"])]
+    assert [c["id"] for c in paper["senate"]["ungrouped"]] == ["s3"]
 
 
-def test_start_voting_session_requires_authentication():
-    use_unauthenticated_client()
+def test_ballot_paper_shows_an_active_session_and_hides_the_ballot_after_voting(env):
+    env.post(START_URL)
+    assert env.client.get(CURRENT_URL).json()["voter"]["sessionExpiresAt"] is not None
 
-    response = TestClient(app).post(START_URL)
+    env.post(SUBMIT_URL, BALLOT)
+    paper = env.client.get(CURRENT_URL).json()
 
-    assert response.status_code == 401
-
-
-def test_start_voting_session_rejects_unapproved_enrolment():
-    voter = approved_voter(enrolmentStatus="pending")
-    configure_voter(voter)
-
-    response = TestClient(app).post(START_URL)
-
-    assert response.status_code == 403
-    assert voter.data["voting"] is False
+    assert paper["voter"]["hasVoted"] is True
+    assert paper["house"] is None and paper["senate"] is None
 
 
-def test_start_voting_session_rejects_ineligible_voter():
-    voter = approved_voter(eligibilityStatus="pending")
-    configure_voter(voter)
+def test_ballot_paper_needs_an_open_election(env):
+    env.store[f"elections/{ELECTION}"]["status"] = "closed"
 
-    response = TestClient(app).post(START_URL)
-
-    assert response.status_code == 403
-    assert voter.data["voting"] is False
+    assert env.client.get(CURRENT_URL).status_code == 404
 
 
-def test_start_voting_session_rejects_voter_already_voted():
-    voter = approved_voter(
-        voted=True,
-        votedElections={ELECTION_ID: True},
-    )
-    configure_voter(voter)
+def test_ballot_paper_is_only_for_enrolled_voters(env):
+    env.voter()["enrolmentStatus"] = "pending"
 
-    response = TestClient(app).post(START_URL)
-
-    assert response.status_code == 409
-    assert voter.data["voting"] is False
+    assert env.client.get(CURRENT_URL).status_code == 403
 
 
-def test_start_voting_session_rejects_active_session():
-    voter = approved_voter(
-        voting=True,
-        activeElectionId=ELECTION_ID,
-    )
-    configure_voter(voter)
-
-    response = TestClient(app).post(START_URL)
-
-    assert response.status_code == 409
+# ------------------------------------------------------------------- start
 
 
-def test_start_voting_session_blocks_unapproved_voter_ip():
-    voter = approved_voter()
-    configure_voter(voter)
-    use_unapproved_voter_ip()
+def test_start_marks_the_voter_as_voting_for_fifteen_minutes(env):
+    response = env.post(START_URL)
 
-    response = TestClient(app).post(START_URL)
+    assert response.status_code == 200
+    voter = env.voter()
+    assert voter["voting"] is True and voter["activeElectionId"] == ELECTION
+    remaining = voter["sessionExpiresAt"] - datetime.now(timezone.utc)
+    assert timedelta(minutes=14) < remaining <= timedelta(minutes=15)
+
+
+def test_start_requires_a_bearer_token(env):
+    del app.dependency_overrides[verify_token]
+
+    assert env.post(START_URL).status_code == 401
+
+
+def test_start_is_refused_for_a_voter_who_is_not_enrolled(env):
+    env.voter()["enrolmentStatus"] = "pending"
+
+    response = env.post(START_URL)
 
     assert response.status_code == 403
-    assert voter.data["voting"] is False
-    assert voter.data["activeElectionId"] is None
+    assert "voting" not in env.voter()
+    assert env.audit_actions() == [("ballot.session.rejected", "not_enrolled")]
 
 
-def test_submit_ballot_succeeds_and_marks_voter_voted():
-    voter = approved_voter(
-        voting=True,
-        activeElectionId=ELECTION_ID,
-    )
-    fake_db = configure_voter(voter)
+def test_start_is_refused_after_voting_in_this_election(env):
+    assert _cast(env).status_code == 201
 
-    response = TestClient(app).post(
-        SUBMIT_URL,
-        json=VALID_BALLOT,
-    )
+    assert env.post(START_URL).status_code == 409
+
+
+def test_a_second_session_is_refused_until_the_first_expires(env):
+    assert env.post(START_URL).status_code == 200
+    assert env.post(START_URL).status_code == 409
+
+    env.voter()["sessionExpiresAt"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+    assert env.post(START_URL).status_code == 200
+
+
+@pytest.mark.parametrize("change", [{"status": "closed"}, {"closeAt": datetime(2000, 1, 1, tzinfo=timezone.utc)}])
+def test_start_is_refused_when_voting_is_not_open(env, change):
+    env.store[f"elections/{ELECTION}"].update(change)
+
+    assert env.post(START_URL).status_code == 409
+    assert "voting" not in env.voter()
+
+
+def test_start_is_refused_from_a_network_outside_the_voter_allowlist(env, monkeypatch):
+    del app.dependency_overrides[enforce_voter_ip_allowlist]
+    monkeypatch.setattr(auth, "_active_ranges", lambda: [])
+
+    assert env.post(START_URL).status_code == 403
+    assert "voting" not in env.voter()
+
+
+# ------------------------------------------------------------------ submit
+
+
+def test_submitting_stores_an_encrypted_ballot_and_returns_a_receipt(env):
+    response = _cast(env)
 
     assert response.status_code == 201
-    assert response.json()["voted"] is True
-
-    assert voter.data["voted"] is True
-    assert voter.data["voting"] is False
-    assert voter.data["votedElections"][ELECTION_ID] is True
-    assert voter.data["activeElectionId"] is None
-
-    stored_ballots = list(fake_db.ballots.documents.values())
-    assert len(stored_ballots) == 1
-    assert stored_ballots[0].data["housePreferences"].startswith("encrypted::")
-    assert stored_ballots[0].data["senateAboveTheLine"].startswith("encrypted::")
-    assert stored_ballots[0].data["senateBelowTheLine"].startswith("encrypted::")
-
-
-def test_submit_ballot_requires_authentication():
-    use_unauthenticated_client()
-
-    response = TestClient(app).post(
-        SUBMIT_URL,
-        json=VALID_BALLOT,
-    )
-
-    assert response.status_code == 401
+    body = response.json()
+    assert receipts.normalize_receipt(body["receipt"]) is not None and body["electionId"] == ELECTION
+    [house] = env.docs(f"elections/{ELECTION}/houseBallots")
+    [senate] = env.docs(f"elections/{ELECTION}/senateBallots")
+    # Only the contest stays readable: no choices, formality, voter reference or time
+    assert set(house) == {"divisionId", "source", "encryptedPreferences"}
+    assert set(senate) == {"stateId", "source", "encryptedChoices"}
+    assert "h1" not in json.dumps(house) and "s1" not in json.dumps(senate)
+    assert json.loads(env.encryption.decrypt(_sealed(house["encryptedPreferences"]))) == ["h2", "h1"]
+    # The receipt is stored hashed, for this election
+    assert env.store[f"receipts/{receipts.receipt_hash(receipts.normalize_receipt(body['receipt']))}"][
+        "electionId"] == ELECTION
+    voter = env.voter()
+    assert voter["voted"] is True and voter[reconciliation.voted_field(ELECTION)] is True
+    assert voter["voting"] is False and voter["activeElectionId"] is None
 
 
-def test_submit_ballot_rejects_voter_already_voted():
-    voter = approved_voter(
-        voted=True,
-        votedElections={ELECTION_ID: True},
-    )
-    configure_voter(voter)
-
-    response = TestClient(app).post(
-        SUBMIT_URL,
-        json=VALID_BALLOT,
-    )
+def test_submitting_without_an_active_session_is_refused(env):
+    response = env.post(SUBMIT_URL, BALLOT)
 
     assert response.status_code == 409
+    assert env.voter()["voted"] is False
+    assert env.audit_actions() == [("ballot.rejected", "no_active_session")]
 
 
-def test_submit_ballot_rejects_request_without_active_session():
-    voter = approved_voter()
-    configure_voter(voter)
+def test_an_expired_session_cannot_submit(env):
+    env.post(START_URL)
+    env.voter()["sessionExpiresAt"] = datetime.now(timezone.utc) - timedelta(seconds=1)
 
-    response = TestClient(app).post(
-        SUBMIT_URL,
-        json=VALID_BALLOT,
-    )
-
-    assert response.status_code == 409
-    assert voter.data["voted"] is False
+    assert env.post(SUBMIT_URL, BALLOT).status_code == 409
+    assert env.docs(f"elections/{ELECTION}/houseBallots") == []
 
 
-def test_submit_ballot_rejects_closed_election():
-    voter = approved_voter(
-        voting=True,
-        activeElectionId=ELECTION_ID,
-    )
-    closed_election = FakeDocumentReference(
-        ELECTION_ID,
-        {
-            "status": "closed",
-            "phase": "closed",
-        },
-    )
-    configure_voter(voter, closed_election)
+def test_a_second_ballot_is_refused_and_audited(env):
+    assert _cast(env).status_code == 201
 
-    response = TestClient(app).post(
-        SUBMIT_URL,
-        json=VALID_BALLOT,
-    )
+    response = env.post(SUBMIT_URL, BALLOT)
 
     assert response.status_code == 409
-    assert voter.data["voted"] is False
+    assert len(env.docs(f"elections/{ELECTION}/houseBallots")) == 1
+    assert ("ballot.rejected", "double_vote_attempt") in env.audit_actions()
 
 
-def test_submit_ballot_blocks_unapproved_voter_ip():
-    voter = approved_voter(
-        voting=True,
-        activeElectionId=ELECTION_ID,
-    )
-    configure_voter(voter)
-    use_unapproved_voter_ip()
+@pytest.mark.parametrize("ballot", [
+    {"house": {"preferences": ["h1", "h9"]}, "senate": {}},
+    {"house": {"preferences": ["h1", "h1"]}, "senate": {}},
+    {"house": {"preferences": []}, "senate": {"aboveTheLine": ["g9"]}},
+])
+def test_invalid_choices_are_refused_and_nothing_is_written(env, ballot):
+    env.post(START_URL)
 
-    response = TestClient(app).post(
-        SUBMIT_URL,
-        json=VALID_BALLOT,
-    )
+    response = env.post(SUBMIT_URL, ballot)
 
-    assert response.status_code == 403
-    assert voter.data["voted"] is False
+    assert response.status_code == 422
+    assert env.docs(f"elections/{ELECTION}/houseBallots") == []
+    assert env.docs("receipts") == []
+    assert env.voter()["voted"] is False
+
+
+def test_submitting_after_voting_closes_is_refused(env):
+    env.post(START_URL)
+    env.store[f"elections/{ELECTION}"]["status"] = "closed"
+
+    assert env.post(SUBMIT_URL, BALLOT).status_code == 409
+    assert env.voter()["voted"] is False
+
+
+# ----------------------------------------------------- reconciling and counting
+
+
+def _request() -> Request:
+    return Request({"type": "http", "method": "POST", "path": "/", "headers": [],
+                    "client": ("127.0.0.1", 0), "query_string": b""})
+
+
+def _sealed(value: dict):
+    from backend.security.encryption import EncryptedValue
+    return EncryptedValue(value["ciphertext"], value["keyId"])
+
+
+def test_encrypted_ballots_reconcile_and_are_counted_when_published(env):
+    assert _cast(env, "uid_1").status_code == 201
+    # Second voter: House informal (one of two numbered); Senate above the line
+    assert _cast(env, "uid_2", {"house": {"preferences": ["h1"]},
+                                "senate": {"aboveTheLine": ["g1"], "belowTheLine": []}}).status_code == 201
+
+    assert reconciliation.reconcile_votes(ELECTION)["reconciled"] is True
+    env.store[f"elections/{ELECTION}"]["status"] = "finalised"
+    results.publish_results(ELECTION, {"staffId": "a1", "role": "admin"}, _request())
+
+    contests = {c["id"]: c for c in json.loads(env.store[f"publishedResults/{ELECTION}"]["packageJson"])["contests"]}
+    house, senate = contests["house-div_vic"], contests["senate-VIC"]
+    assert (house["ballotsCast"], house["informal"]) == (2, 1)
+    assert {c["id"]: c["votes"] for c in house["candidates"]} == {"h1": 0, "h2": 1}
+    assert senate["informal"] == 0
+    assert {c["id"]: c["votes"] for c in senate["candidates"]} == {"g1": 2}
+
+
+def test_a_ballot_that_cannot_be_decrypted_stops_publication(env):
+    assert _cast(env).status_code == 201
+    [path] = [p for p in env.store if p.startswith(f"elections/{ELECTION}/houseBallots/")]
+    sealed = env.store[path]["encryptedPreferences"]
+    env.store[path]["encryptedPreferences"] = {**sealed, "ciphertext": sealed["ciphertext"][:-4] + "AAAA"}
+    env.store[f"elections/{ELECTION}"]["status"] = "finalised"
+
+    with pytest.raises(HTTPException) as refused:
+        results.publish_results(ELECTION, {"staffId": "a1", "role": "admin"}, _request())
+
+    assert refused.value.status_code == 409
+    assert f"publishedResults/{ELECTION}" not in env.store
+
+
+def test_ballots_stored_before_encryption_are_still_counted(env):
+    assert _cast(env).status_code == 201
+    env.store[f"elections/{ELECTION}/houseBallots/legacy"] = {
+        "divisionId": "div_vic", "preferences": ["h1", "h2"], "source": "electronic", "isFormal": True}
+    env.store[f"elections/{ELECTION}/senateBallots/legacy"] = {
+        "stateId": "VIC", "aboveTheLine": ["g1"], "belowTheLine": [], "source": "electronic",
+        "isFormal": True, "countedAs": "aboveTheLine"}
+
+    house, senate = results._open_ballots(
+        {k.rsplit("/", 1)[1]: v for k, v in env.store.items() if "/candidates/" in k},
+        env.docs(f"elections/{ELECTION}/houseBallots"), env.docs(f"elections/{ELECTION}/senateBallots"))
+
+    assert sorted(b["preferences"][0] for b in house) == ["h1", "h2"]
+    assert all(b["isFormal"] for b in house + senate)

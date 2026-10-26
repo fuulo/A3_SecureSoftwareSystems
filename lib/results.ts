@@ -50,12 +50,29 @@ export type ResultArchive = {
   files: { name: string; fileId: string; fingerprint: string; hashAlgorithm: string; size: number }[];
 };
 
+// Digital signature of the exact package bytes (backend/security/signing.py)
+export type ResultSignature = {
+  algorithm: "Ed25519";
+  keyId: string;
+  // 64 bytes as hex
+  value: string;
+};
+
+// The public key that checks result signatures, read from the server's key file
+export type SigningKey = {
+  algorithm: "Ed25519";
+  keyId: string;
+  publicKeyPem: string;
+};
+
 export type PublishedResults = {
   // Fingerprint recorded when the package was published, and the hash
   // algorithm that made it (backend/security/hashing.py)
   fingerprint: string;
   algorithm: string;
   package: ResultPackage;
+  // Missing or null for results published before signing was added
+  signature?: ResultSignature | null;
   // Missing for results published before archiving was added
   archive?: ResultArchive | null;
 };
@@ -84,9 +101,24 @@ export function resultPackageUrl() {
   return publicApiUrl("/api/public/results/package.json");
 }
 
+// The package's raw signature, for checking with tools such as openssl
+export function packageSignatureUrl() {
+  return publicApiUrl("/api/public/results/package.sig");
+}
+
 // Every receipt hash for the published election, one per line
 export function receiptListUrl() {
   return publicApiUrl("/api/public/results/receipts.txt");
+}
+
+// The current results signing key, or null if the server has none
+export async function fetchSigningKey(): Promise<SigningKey | null> {
+  try {
+    return await publicApiRequest<SigningKey>("/api/public/results/signing-key");
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
 }
 
 // Latest published results, or null if nothing has been published yet

@@ -4,8 +4,10 @@ The package is frozen as exact JSON bytes when published. Its fingerprint (the
 "results" algorithm in backend/security/hashing.py, SHA-256 by default) is
 stored next to it with the algorithm's name and written into the audit hash
 chain, so a downloaded copy can be checked against the fingerprint on the
-results page. The package and the receipt list are also archived, locked for
-7 years (``backend.archive``), before anything is published.
+results page. The bytes are also signed with Ed25519 (R-09,
+``backend.security.signing``), so a copy can be proven genuine with the public
+key alone. The package, its signature, the public key and the receipt list are
+archived, locked for 7 years (``backend.archive``), before anything is published.
 """
 import json
 import logging
@@ -17,12 +19,14 @@ from zoneinfo import ZoneInfo
 from fastapi import HTTPException, Request
 from google.cloud import firestore
 
+from backend import ballots
 from backend.archive import archive_election
 from backend.audit import write_audit
 from backend.firestore_client import db
 from backend.receipts import receipt_list
 from backend.reconciliation import require_reconciled
-from backend.security import hashing
+from backend.security import hashing, signing
+from backend.security.key_management import get_encryption_service
 
 logger = logging.getLogger(__name__)
 PACKAGE_VERSION = 4
@@ -175,6 +179,26 @@ def _count(query: Any) -> int:
     return int(query.count().get()[0][0].value)
 
 
+def _open_ballots(candidates: Docs, house_docs: list[dict[str, Any]],
+                  senate_docs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Decrypt ballots for counting. Formality is decided here, from the candidates
+    each contest has, so it is never stored beside an encrypted ballot."""
+    usable = [c for c in candidates.values() if c.get("withdrawn") is not True and c.get("excluded") is not True]
+    house_counts = Counter(c.get("divisionId") for c in usable if c.get("chamber") == "house")
+    senate_counts = Counter(c.get("stateId") for c in usable if c.get("chamber") == "senate")
+    encrypted = any(ballots.is_encrypted(doc) for doc in house_docs + senate_docs)
+    encryption = get_encryption_service() if encrypted else None
+    try:
+        return (
+            [ballots.open_house(doc, encryption, house_counts[doc.get("divisionId")]) for doc in house_docs],
+            [ballots.open_senate(doc, encryption, senate_counts[doc.get("stateId")]) for doc in senate_docs],
+        )
+    except ballots.BallotUnreadable as exc:
+        logger.exception("A ballot could not be opened for counting")
+        raise HTTPException(status_code=409,
+                            detail="A ballot could not be decrypted, so results were not published") from exc
+
+
 def publish_results(election_id: str, actor: dict[str, Any], request: Request) -> dict[str, str]:
     election_ref = db.collection("elections").document(election_id)
     published_ref = db.collection("publishedResults").document(election_id)
@@ -192,8 +216,11 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
     # Ballots cannot change once an election is finalised, so they are read outside the transaction.
     candidates = _docs(election_ref.collection("candidates"))
     parties = _docs(election_ref.collection("parties"))
-    house_ballots = [item.to_dict() or {} for item in election_ref.collection("houseBallots").stream()]
-    senate_ballots = [item.to_dict() or {} for item in election_ref.collection("senateBallots").stream()]
+    house_ballots, senate_ballots = _open_ballots(
+        candidates,
+        [item.to_dict() or {} for item in election_ref.collection("houseBallots").stream()],
+        [item.to_dict() or {} for item in election_ref.collection("senateBallots").stream()],
+    )
     contests = (
         tally_house(_docs(election_ref.collection("divisions")), candidates, parties, house_ballots)
         + tally_senate(_docs(election_ref.collection("senateRegions")), _docs(election_ref.collection("senateGroups")),
@@ -217,11 +244,22 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
     )
     content = package_bytes(package)
     algorithm, fingerprint = hashing.digest("results", content)
+    # Results are never published unsigned
+    try:
+        signature = signing.sign(content)
+        public_key = signing.public_key()
+    except signing.SigningKeyMissing as exc:
+        logger.exception("Results could not be signed")
+        raise HTTPException(status_code=503, detail="Results could not be signed, so they were not published") from exc
     # Kept beside the named fingerprint for readers that expect it
     legacy_field = {"sha256": fingerprint} if algorithm == "sha256" else {}
     # Archived before anything is published, so results never go out without their 7-year copy.
+    # The public key goes with the signature, so the copy can be checked after the key is replaced.
     archive = archive_election(election_id, {
         f"result-package-{fingerprint}.json": (content, "application/json"),
+        f"result-package-{fingerprint}.sig": (bytes.fromhex(signature["value"]), "application/octet-stream"),
+        f"results-signing-key-{signature['keyId']}.pem": (public_key["publicKeyPem"].encode("ascii"),
+                                                          "application/x-pem-file"),
         f"receipts-{receipts_fingerprint}.txt": (receipts, "text/plain"),
     }, published_at)
     transaction = db.transaction()
@@ -236,6 +274,7 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
                     target_type="election", target_id=election_id, target_path=published_ref.path,
                     before=None,
                     after={"fingerprint": fingerprint, "hashAlgorithm": algorithm,
+                           "signature": signature,
                            "ballotsCast": len(house_ballots),
                            "receiptsFingerprint": receipts_fingerprint, "archive": archive},
                     outcome="success", reason=None if archive else "archive_not_configured",
@@ -246,6 +285,9 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
             "fingerprint": fingerprint,
             "hashAlgorithm": algorithm,
             **legacy_field,
+            "signature": signature["value"],
+            "signatureAlgorithm": signature["algorithm"],
+            "signingKeyId": signature["keyId"],
             "receiptsFingerprint": receipts_fingerprint,
             "archive": archive,
             "publishedAt": published_at,
@@ -259,4 +301,5 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
     except Exception as exc:
         logger.exception("Result publication failed")
         raise HTTPException(status_code=400, detail="Unable to publish results") from exc
-    return {"electionId": election_id, "fingerprint": fingerprint, "hashAlgorithm": algorithm, **legacy_field}
+    return {"electionId": election_id, "fingerprint": fingerprint, "hashAlgorithm": algorithm,
+            "signingKeyId": signature["keyId"], **legacy_field}

@@ -33,6 +33,8 @@ HASH_ALGORITHMS = {
     "results": os.getenv("HASH_ALGORITHM_RESULTS", "sha256"),
     "index": os.getenv("HASH_ALGORITHM_INDEX", "sha256"),
 }
+# Ed25519 private key that signs published results (see backend/security/signing.py)
+RESULTS_SIGNING_KEY_FILE = os.getenv("RESULTS_SIGNING_KEY_FILE", "certs/results-signing-key.pem")
 # Used when a new session signing key is created (see backend/sessions.py)
 SESSION_SIGNING_ALGORITHM = os.getenv("SESSION_SIGNING_ALGORITHM", "HS256")
 # Shared by the frontend and API TLS listeners

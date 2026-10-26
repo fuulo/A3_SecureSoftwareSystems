@@ -6,12 +6,15 @@ import { mainHeader } from "../../components/styles";
 import {
   algorithmForFingerprint,
   fetchPublishedResults,
+  fetchSigningKey,
   fingerprintAlgorithm,
   FINGERPRINT_ALGORITHMS,
   formatNumber,
+  packageSignatureUrl,
   receiptListUrl,
   resultPackageUrl,
   type FingerprintAlgorithm,
+  type SigningKey,
 } from "../../lib/results";
 import { RECEIPT_ALPHABET, RECEIPT_LENGTH } from "../../lib/receipts";
 
@@ -21,6 +24,8 @@ const MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024;
 const MAX_LIST_MB = 20;
 const MAX_LIST_BYTES = MAX_LIST_MB * 1024 * 1024;
 const RECEIPT_CODE = new RegExp(`^[${RECEIPT_ALPHABET}]{${RECEIPT_LENGTH}}$`);
+// An Ed25519 signature is 64 bytes
+const SIGNATURE_HEX = /^[0-9a-f]{128}$/;
 
 type Check = {
   label: string;
@@ -40,6 +45,65 @@ async function fingerprintHex(buffer: BufferSource, algorithm: FingerprintAlgori
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+}
+
+function hexBytes(hex: string) {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return bytes;
+}
+
+// The DER bytes inside a PEM public key
+function pemBytes(pem: string) {
+  const base64 = pem.replace(/-----[^-]+-----/g, "").replace(/\s/g, "");
+  return Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+}
+
+// Checks the package's Ed25519 signature (R-09) with the results signing key.
+// signedWith is the key ID published with the results, if known.
+async function checkSignature(
+  data: ArrayBuffer,
+  signatureHex: string,
+  key: SigningKey | null,
+  signedWith: string
+): Promise<Check> {
+  const label = "Digitally signed";
+  if (!signatureHex) {
+    return {
+      label,
+      passed: false,
+      detail: "No signature was given. Results published before signing was added have none.",
+    };
+  }
+  if (!key) {
+    return {
+      label,
+      passed: false,
+      detail: "The results signing key could not be loaded, so the signature cannot be checked.",
+    };
+  }
+  let publicKey: CryptoKey;
+  try {
+    publicKey = await crypto.subtle.importKey("spki", pemBytes(key.publicKeyPem), { name: "Ed25519" }, false, [
+      "verify",
+    ]);
+  } catch {
+    return {
+      label,
+      passed: false,
+      detail: "Your browser cannot check Ed25519 signatures. Use a current version of Chrome, Edge, Firefox or Safari.",
+    };
+  }
+  const valid = await crypto.subtle.verify({ name: "Ed25519" }, publicKey, hexBytes(signatureHex), data);
+  return {
+    label,
+    passed: valid,
+    detail: valid
+      ? `Signed with the official results key ${key.keyId}. The file has not changed since it was signed.`
+      : signedWith && signedWith !== key.keyId
+        ? `These results were signed with key ${signedWith}, not the current key ${key.keyId}. Check the archived copy with its archived key.`
+        : "The signature does not match this file. The file or the signature may have been changed.",
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -276,6 +340,11 @@ export default function VerifyPackagePage() {
   // Name of the published fingerprint's algorithm, for the field label
   const [publishedLabel, setPublishedLabel] = useState("");
   const [hashNotice, setHashNotice] = useState("Loading the published fingerprint...");
+  const publishedSignature = useRef("");
+  const [expectedSignature, setExpectedSignature] = useState("");
+  // Key ID the published results were signed with
+  const [signedWith, setSignedWith] = useState("");
+  const [signingKey, setSigningKey] = useState<SigningKey | null>(null);
   const [error, setError] = useState("");
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [checking, setChecking] = useState(false);
@@ -294,6 +363,11 @@ export default function VerifyPackagePage() {
         setExpectedHash((current) => current || published.fingerprint);
         setPublishedLabel(fingerprintAlgorithm(published.algorithm)?.label ?? published.algorithm);
         setHashNotice("");
+        if (published.signature) {
+          publishedSignature.current = published.signature.value;
+          setExpectedSignature((current) => current || published.signature!.value);
+          setSignedWith(published.signature.keyId);
+        }
       })
       .catch(() => {
         if (active) {
@@ -302,6 +376,12 @@ export default function VerifyPackagePage() {
           );
         }
       });
+    // A failure leaves the key empty, and the signature check then says it could not be loaded
+    fetchSigningKey()
+      .then((key) => {
+        if (active) setSigningKey(key);
+      })
+      .catch(() => {});
     return () => {
       active = false;
     };
@@ -315,6 +395,7 @@ export default function VerifyPackagePage() {
       setReceiptFile(null);
       setReceiptCode("");
       setExpectedHash(publishedHash.current);
+      setExpectedSignature(publishedSignature.current);
       setError("");
       setOutcome(null);
     }
@@ -348,6 +429,11 @@ export default function VerifyPackagePage() {
       setError(`The expected fingerprint must be ${lengths} characters long (0-9 and a-f).`);
       return;
     }
+    const signature = expectedSignature.trim().toLowerCase();
+    if (signature && !SIGNATURE_HEX.test(signature)) {
+      setError("The signature must be 128 characters long (0-9 and a-f).");
+      return;
+    }
     const code = normalizeReceipt(receiptCode);
     if (code && !receiptFile) {
       setError("Choose the receipt list to check your receipt code against.");
@@ -371,6 +457,7 @@ export default function VerifyPackagePage() {
     try {
       const buffer = await file.arrayBuffer();
       const computedHash = await fingerprintHex(buffer, algorithm);
+      const signatureCheck = await checkSignature(buffer, signature, signingKey, signedWith);
       const text = new TextDecoder().decode(buffer);
       let receiptChecks: Check[] = [];
       if (receiptFile) {
@@ -389,6 +476,7 @@ export default function VerifyPackagePage() {
                 ? "The file is identical to the officially published package."
                 : "The file differs from the published package. It may have been changed.",
           },
+          signatureCheck,
           ...checkContents(text),
           ...receiptChecks,
         ],
@@ -460,6 +548,35 @@ export default function VerifyPackagePage() {
             <p id="expected-help" className="mt-1 text-[13px] text-slate-600">
               {hashNotice ||
                 "Filled in with the fingerprint published on the results page. You can paste one from another trusted source instead."}
+            </p>
+          </div>
+
+          <div>
+            <label htmlFor="signature" className="mb-1 block font-semibold text-[18px]">
+              Expected Ed25519 signature
+            </label>
+            <input
+              id="signature"
+              name="signature"
+              type="text"
+              autoComplete="off"
+              spellCheck={false}
+              value={expectedSignature}
+              onChange={(e) => {
+                setExpectedSignature(e.target.value);
+                setOutcome(null);
+              }}
+              aria-describedby="signature-help"
+              className="w-full rounded border border-slate-400 px-3 py-2 font-mono text-[13px] focus:outline-none focus:ring-2 focus:ring-[#1f538d]"
+            />
+            <p id="signature-help" className="mt-1 text-[13px] text-slate-600">
+              Filled in with the signature published with the results
+              {signingKey ? `, checked with the official results key ${signingKey.keyId}` : ""}. To check
+              with other tools,{" "}
+              <a href={packageSignatureUrl()} download className="text-[#1b4779] hover:underline">
+                download the signature file
+              </a>
+              .
             </p>
           </div>
 

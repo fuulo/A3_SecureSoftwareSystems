@@ -19,7 +19,7 @@ from backend import archive, audit, receipts, reconciliation, results
 from backend.main import app
 from backend.rate_limit import limiter
 from backend.routers import public_results
-from backend.security import hashing
+from backend.security import hashing, signing
 from backend.tests.fake_firestore import FakeDb, fake_transactional
 
 PUBLISHED = datetime(2028, 5, 1, 9, 0, tzinfo=timezone.utc)
@@ -156,6 +156,9 @@ def test_publishing_archives_the_package_and_receipt_list(db, bucket):
     assert package["election"]["receiptsHashAlgorithm"] == "sha256"
     assert {(u["name"], u["data"]) for u in bucket.uploads} == {
         (f"elections/e1/result-package-{out['fingerprint']}.json", published["packageJson"].encode("utf-8")),
+        (f"elections/e1/result-package-{out['fingerprint']}.sig", bytes.fromhex(published["signature"])),
+        (f"elections/e1/results-signing-key-{out['signingKeyId']}.pem",
+         signing.public_key()["publicKeyPem"].encode("ascii")),
         (f"elections/e1/receipts-{receipts_fingerprint}.txt", receipt_list),
     }
     assert published["archive"]["bucket"] == "voting-test"
