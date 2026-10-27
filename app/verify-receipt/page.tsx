@@ -188,7 +188,7 @@ export default function VerifyReceiptPage() {
             href="/"
             className="text-[13px] capitalize text-[#1b4779] hover:underline"
           >
-            Back to start page
+            Back to home page
           </Link>
         </div>
       </div>

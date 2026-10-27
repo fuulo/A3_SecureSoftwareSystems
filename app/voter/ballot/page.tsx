@@ -146,6 +146,7 @@ export default function VoterBallotPage() {
       if (startError instanceof ApiError && startError.status === 409) {
         // Already voted, or a session is open: the ballot paper says which
         await loadPaper();
+        setError(startError.message);
         return;
       }
       setError(apiMessage(startError, "Your voting session could not be started. Please try again."));
