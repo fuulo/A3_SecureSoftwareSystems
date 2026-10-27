@@ -37,6 +37,10 @@ export type ResultPackage = {
     // and its algorithm (one of FINGERPRINT_ALGORITHMS)
     receiptsFingerprint?: string;
     receiptsHashAlgorithm?: string;
+    // Added in package version 5: ballots that failed their integrity check
+    // (R-15) and were left out of every contest. Included in the counts above.
+    excludedHouseBallots?: number;
+    excludedSenateBallots?: number;
   };
   contests: Contest[];
 };

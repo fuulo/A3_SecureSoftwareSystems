@@ -159,6 +159,15 @@ class PhaseChange(StrictModel):
         return sanitise_free_text(value)
 
 
+class FlagReview(StrictModel):
+    note: Annotated[str, Field(min_length=1, max_length=500)]
+
+    @field_validator("note")
+    @classmethod
+    def validate_note(cls, value: str) -> str:
+        return sanitise_free_text(value)
+
+
 class EnrolmentApproval(StrictModel):
     divisionId: SafeId
 

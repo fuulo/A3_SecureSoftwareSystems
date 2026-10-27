@@ -32,6 +32,7 @@
         /terminals/{terminalId}
     /houseBallots/{ballotId}
     /senateBallots/{ballotId}
+    /flaggedBallots/{flagId}           ← ballots that failed their integrity check (R-15)
     /counts/{countId}                  ← results & recounts
         /rounds/{roundNumber}
 /receipts/{receiptHash}                ← ballot receipts (hash only)
@@ -390,6 +391,7 @@ Candidate withdrawals are soft state changes. A withdrawn candidate is never del
 {
   "divisionId": "div_melbourne",
   "source": "electronic | paper_scan",
+  "integrity": 1,  // sealed with its context as associated data (see below)
   // AES-256-GCM of the JSON list ["cand_5", "cand_2", ...], index 0 = preference 1
   "encryptedPreferences": { "ciphertext": "base64(nonce + ciphertext)", "keyId": "key-20281001000000" }
 }
@@ -401,6 +403,7 @@ Candidate withdrawals are soft state changes. A withdrawn candidate is never del
 {
   "stateId": "VIC",
   "source": "electronic | paper_scan",
+  "integrity": 1,
   // AES-256-GCM of {"aboveTheLine": ["group_C", ...], "belowTheLine": ["cand_44", ...]}
   "encryptedChoices": { "ciphertext": "...", "keyId": "key-20281001000000" }
 }
@@ -412,9 +415,39 @@ same transaction as the voter's `voted` flag and the receipt. Only the contest
 of a Senate ballot counts (`countedAs`) are worked out when the ballots are
 decrypted for publication (`backend/ballots.py`), so they are never stored.
 Keys are kept after rotation (`status: "retired"`), so every ballot can still be
-decrypted. Ballots stored before encryption keep plaintext `preferences`,
-`aboveTheLine`, `belowTheLine`, `isFormal` and `countedAs`, and are counted as
-they are.
+decrypted.
+
+The election ID, chamber, contest (`divisionId` or `stateId`), ballot ID and
+`source` are the cipher's associated data (R-15): authenticated but not stored
+encrypted, so a ballot that is altered, or copied or moved to another ballot,
+contest or election, no longer decrypts. Ballots without `integrity: 1`
+(plaintext ballots, or encrypted ones from before this change) cannot be
+verified, so they are flagged and excluded.
+
+### `elections/{electionId}/flaggedBallots/{flagId}`
+
+`flagId` is `house-{ballotId}` or `senate-{ballotId}`. Written by
+`backend/ballot_integrity.py` when a ballot fails its integrity check; the
+ballot is then left out of the count, even if it would pass later.
+
+```jsonc
+{
+  "flagId": "house-Xk29...",
+  "chamber": "house | senate",
+  "ballotId": "Xk29...",
+  "ballotPath": "elections/fed2028/houseBallots/Xk29...",
+  "contestId": "div_melbourne",    // null if the stored value was not an ID
+  "reason": "decrypt_failed | malformed | duplicate_choice | unknown_choice | legacy_unverified",
+  "status": "pending | reviewed",  // finalising and publishing wait for every flag to be reviewed
+  "detectedAt": "timestamp",
+  "detectedBy": "staffId",
+  "reviewedBy": null,
+  "reviewedAt": null,
+  "reviewNote": null               // required when reviewed
+}
+```
+
+Flags never hold the ballot's choices.
 
 Ballots hold no voter reference and no timestamp, so they cannot be traced back
 to the voter, who only gains `voted: true` and `votedElections.{electionId}: true`.

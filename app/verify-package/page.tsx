@@ -134,6 +134,8 @@ function checkContents(text: string): Check[] {
     isCount(election.receiptsIssued) &&
     (election.senateBallotsCast === undefined || isCount(election.senateBallotsCast)) &&
     (election.votersMarkedVoted === undefined || isCount(election.votersMarkedVoted)) &&
+    (election.excludedHouseBallots === undefined || isCount(election.excludedHouseBallots)) &&
+    (election.excludedSenateBallots === undefined || isCount(election.excludedSenateBallots)) &&
     Array.isArray(contests) &&
     contests.length > 0 &&
     contests.every(
@@ -167,6 +169,10 @@ function checkContents(text: string): Check[] {
   const votersMarkedVoted = isCount(election.votersMarkedVoted)
     ? election.votersMarkedVoted
     : null;
+  // Added in package version 5: ballots left out of every contest after failing
+  // their integrity check (R-15); older packages excluded none
+  const excludedHouse = isCount(election.excludedHouseBallots) ? election.excludedHouseBallots : 0;
+  const excludedSenate = isCount(election.excludedSenateBallots) ? election.excludedSenateBallots : 0;
   const typedContests = contests as {
     title: string;
     chamber: "house" | "senate";
@@ -202,18 +208,21 @@ function checkContents(text: string): Check[] {
     });
   }
 
-  // Each chamber's contests together must account for every ballot exactly once
-  for (const [chamber, label, cast] of [
-    ["house", "House", ballotsCast],
-    ["senate", "Senate", senateBallotsCast],
+  // Each chamber's contests together must account for every ballot exactly once,
+  // apart from ballots excluded for failing their integrity check
+  for (const [chamber, label, cast, excluded] of [
+    ["house", "House", ballotsCast, excludedHouse],
+    ["senate", "Senate", senateBallotsCast, excludedSenate],
   ] as const) {
     const total = typedContests
       .filter((c) => c.chamber === chamber)
       .reduce((sum, c) => sum + c.ballotsCast, 0);
     checks.push({
       label: `Every ballot in one contest: ${label}`,
-      passed: total === cast,
-      detail: `${formatNumber(total)} ${label} ballots across contests, ${formatNumber(cast)} ballots cast.`,
+      passed: total + excluded === cast,
+      detail: excluded
+        ? `${formatNumber(total)} ${label} ballots across contests and ${formatNumber(excluded)} excluded, ${formatNumber(cast)} ballots cast.`
+        : `${formatNumber(total)} ${label} ballots across contests, ${formatNumber(cast)} ballots cast.`,
     });
   }
 
