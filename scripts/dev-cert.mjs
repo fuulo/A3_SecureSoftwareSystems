@@ -2,12 +2,14 @@
 // the mkcert development CA when one is installed, so browsers trust it;
 // otherwise it is self-signed and browsers show a warning.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 const keyFile = "certs/localhost-key.pem";
 const certFile = "certs/localhost.pem";
+// What the load balancer trusts when it connects to API instances (infra/haproxy.cfg)
+const trustFile = "certs/ca.pem";
 const force = process.argv.includes("--force");
 
 // Same lookup order as `mkcert -CAROOT`
@@ -18,15 +20,21 @@ function mkcertCaRoot() {
   return path.join(process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local/share"), "mkcert");
 }
 
-if (!force && existsSync(keyFile) && existsSync(certFile)) {
-  console.log(`Certificate already exists: ${certFile} (use --force to replace it)`);
-  process.exit(0);
-}
-
 const caRoot = mkcertCaRoot();
 const caCert = path.join(caRoot, "rootCA.pem");
 const caKey = path.join(caRoot, "rootCA-key.pem");
 const signWithCa = existsSync(caCert) && existsSync(caKey);
+
+// The mkcert CA, or the certificate itself when it is self-signed
+function writeTrustFile() {
+  copyFileSync(signWithCa ? caCert : certFile, trustFile);
+}
+
+if (!force && existsSync(keyFile) && existsSync(certFile)) {
+  if (!existsSync(trustFile)) writeTrustFile();
+  console.log(`Certificate already exists: ${certFile} (use --force to replace it)`);
+  process.exit(0);
+}
 
 const tempDir = mkdtempSync(path.join(os.tmpdir(), "dev-cert-"));
 const configFile = path.join(tempDir, "openssl.cnf");
@@ -58,6 +66,7 @@ try {
 } finally {
   rmSync(tempDir, { recursive: true, force: true });
 }
+writeTrustFile();
 
 if (signWithCa) {
   console.log(`Created ${certFile}, signed by the mkcert development CA in ${caRoot}`);

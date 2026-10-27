@@ -12,6 +12,7 @@ can be replaced or upgraded without redesigning the core voting functionality.
 | --- | --- | --- |
 | Frontend | Next.js behind its own TLS listener (`npm run dev`) | Pages for voters, staff and the public; calls the API over HTTPS |
 | API | FastAPI behind its own TLS listener (`python -m backend.tls_server`) | Voting, counting, staff and election management; each security mechanism in its own module |
+| Edge (optional) | HAProxy in front of several API instances (`docker compose up`) | TLS, traffic filtering, rate limits, health checks and failover for the API; see [R-07](#availability-and-ddos-protection-r-07) |
 | Firebase | Managed service | Sign-in (Authentication) and the centralised database (Firestore), shared by both |
 
 **Core voting functionality** is ballot casting (`record_ballot` in
@@ -28,15 +29,16 @@ contains no algorithm choices: it calls the interfaces below.
 | 2 | Session management | `verify_token` ([backend/auth.py](./backend/auth.py)), [backend/sessions.py](./backend/sessions.py), [lib/session.ts](./lib/session.ts) | JWT (HS256), 2-minute inactivity timeout | `SESSION_SIGNING_ALGORITHM` (HS256, HS384, HS512), then delete `config/sessionSigning` and restart; time limits in one place each | ✅ |
 | 3 | Account lockout | `/api/auth/lockout/*` ([backend/routers/auth_lockout.py](./backend/routers/auth_lockout.py)), [lib/lockout.ts](./lib/lockout.ts) | 3 failures, progressive locks | Rules are constants in one module | ✅ |
 | 4 | Access control | `staff_access`, `require_roles`, IP allowlist checks ([backend/auth.py](./backend/auth.py)) | Roles, IP ranges | One module | ✅ |
-| 5 | Rate limiting | `limiter.limit(...)` ([backend/rate_limit.py](./backend/rate_limit.py)) | Per-IP limits (slowapi) | Replace the limiter in one module | ✅ |
+| 5 | Rate limiting | `limiter.limit(...)` ([backend/rate_limit.py](./backend/rate_limit.py)) | Per-IP limits (slowapi), counted in Redis when several instances run | Replace the limiter in one module; `RATE_LIMIT_STORAGE_URI` chooses the store | ✅ |
 | 6 | Data encryption and key management | `EncryptionService`, `get_encryption_service()` ([backend/security/](./backend/security/)) | AES-256-GCM, versioned keys, 90-day rotation | New key version, or a new service class | ✅ |
 | 7 | Ballot receipts | `issue_receipt`, `receipt_hash` ([backend/receipts.py](./backend/receipts.py)) | Hash provider, `receipt` | `HASH_ALGORITHM_RECEIPT`; earlier receipts still verify | ✅ |
 | 8 | Audit log integrity | `write_audit`, chain verification ([backend/audit.py](./backend/audit.py)) | Hash chain, provider `audit` | `HASH_ALGORITHM_AUDIT`; each entry names its algorithm and the chain verifies across a change | ✅ |
 | 9 | Result integrity | `publish_results`, `GET /api/public/results`, the verify-package page; signing in [backend/security/signing.py](./backend/security/signing.py) | Fingerprint, provider `results`; Ed25519 signature of the package bytes | `HASH_ALGORITHM_RESULTS` (sha256, sha384, sha512); the browser check follows the published algorithm. A new key file replaces the signing key; each signature names its key ID | ✅ |
 | 10 | Authentication and MFA | Firebase Authentication; on the API, `verify_firebase_token` | Password and SMS one-time code | The API side is one function, but the sign-in pages and [lib/mfa.ts](./lib/mfa.ts) use the Firebase SDK directly | ⚠️ Partly: a new provider means rewriting the sign-in pages, not the voting logic |
 | 11 | Voter identity index (GovID) | [backend/routers/employee_voters.py](./backend/routers/employee_voters.py), [backend/routers/voter_registration.py](./backend/routers/voter_registration.py) | Staff path: SHA-256 called directly; self-registration: keyed hash from the encryption module | Both call sites must change | ❌ Not yet |
+| 12 | Availability and DDoS mitigation (R-07) | The `/health` endpoint and the API's address; [docker-compose.yml](./docker-compose.yml), [infra/](./infra/) | HAProxy edge: filtering, per-client limits, health checks, failover; uptime monitor | Swap the edge for another load balancer (such as a cloud provider's) that polls `/health` and sets `X-Forwarded-For` | ✅ |
 
-**Result: 9 of 11 security subsystems (82%) can be replaced or upgraded through
+**Result: 10 of 12 security subsystems (83%) can be replaced or upgraded through
 their interface alone.**
 
 ### Hash algorithms
@@ -265,6 +267,101 @@ through `house_document`/`senate_document` with `source: "paper_scan"`, so they
 get the same checks.
 
 Tests: `python -m pytest backend/tests/test_ballot_integrity.py`
+
+### Availability and DDoS protection (R-07)
+
+[docker-compose.yml](./docker-compose.yml) runs the API as several stateless
+instances behind an edge load balancer, so losing an instance or a burst of
+abusive traffic does not take voting offline:
+
+```text
+clients ──TLS 1.3──▶ edge (HAProxy, :8443) ──TLS 1.3──▶ api × 3 (scalable) ──▶ Firestore
+                     filtering, rate limits,              │
+                     health checks, failover              └──▶ redis (shared rate-limit counts)
+                         ▲
+               monitor ──┘ health through the edge, instance status, alerts
+```
+
+| Part | What it does |
+| --- | --- |
+| Edge ([infra/haproxy.cfg](./infra/haproxy.cfg)) | The only published API port. TLS 1.3 with the ciphers in `tls-policy.json`, towards clients and towards each instance (verified against `certs/ca.pem`) |
+| Traffic filtering | Only `GET HEAD POST PATCH DELETE OPTIONS`, only `/api/*` and `/health`, bodies up to 1 MB; slow or idle clients cut off after 10 seconds |
+| Edge rate limits | Per client address: `EDGE_MAX_REQUESTS_PER_10S` (300), `EDGE_MAX_CONNECTIONS_PER_CLIENT` (100) at once, `EDGE_MAX_NEW_CONNECTIONS_PER_10S` (200). Excess requests get `429` with `Retry-After` |
+| Health checks and failover | `GET /health` on every instance every 2 seconds; an instance that fails twice gets no traffic until it passes twice. Requests that cannot reach an instance go to another. Nothing an instance has received is resent, so a ballot is never submitted twice |
+| Overload | Each instance takes at most 200 requests at once; the rest wait up to 10 seconds, then get `503` |
+| API rate limits | The existing per-endpoint limits ([backend/rate_limit.py](./backend/rate_limit.py)) count in Redis, so they apply across all instances, keyed on the client address the edge sets in `X-Forwarded-For`. If Redis is down, each instance counts on its own |
+| Auto-scaling ([infra/autoscale.py](./infra/autoscale.py)) | Adds an instance when instances are over 50 requests per second each, requests are queued or one is failing, and removes one when load is low; 3 to 10 instances, one change per minute |
+| Uptime monitor ([infra/uptime_monitor.py](./infra/uptime_monitor.py)) | Checks `/health` through the edge every 10 seconds and alerts on an outage (3 failures in a row), fewer than 2 healthy instances, more than 100 refused requests in 10 seconds (likely DDoS), and availability below 99.9% |
+
+The API instances keep no state of their own: sessions, lockouts and data are
+in Firestore, and the session sweep claims each expired session in a
+transaction, so several instances can run it at once.
+
+#### Run it
+
+1. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+   and run `npm run cert:dev` (it also writes `certs/ca.pem`, the CA the edge
+   and monitor trust).
+2. Create `.env` in the repository root (gitignored) with the path of the
+   Firebase service-account key that `backend/.env` uses, and any alert
+   channels:
+
+   ```dotenv
+   FIREBASE_CREDENTIALS_FILE=C:\path\to\service-account.json
+   # Optional alerts; also SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_EMAIL
+   ALERT_WEBHOOK_URL=https://hooks.slack.com/services/...
+   ALERT_EMAIL_TO=ops@example.org
+   ```
+
+3. Start it and point the frontend at the edge:
+
+   ```powershell
+   docker compose up -d --build
+   ```
+
+   In `.env.local`, set `NEXT_PUBLIC_API_BASE_URL=https://localhost:8443`, then
+   `npm run dev` as usual.
+4. Optionally run the autoscaler on the same machine (it runs `docker compose`,
+   so it stays out of the containers): `python infra/autoscale.py`. Add
+   `--dry-run` to only report decisions.
+
+Status of each instance: <http://127.0.0.1:8404/stats> (this machine only).
+Alerts are appended to `logs/alerts.log` and printed by
+`docker compose logs monitor`; measured availability is in
+`logs/uptime-status.json` and survives restarts.
+
+On Docker Desktop every request from this machine reaches the edge from the
+Docker network's gateway (for example `172.19.0.1`), not `127.0.0.1`, so the
+voter and staff IP allowlists need that address to test through the edge.
+
+#### Check it
+
+Git Bash; `--ssl-no-revoke` is only needed with Windows curl.
+
+```bash
+# Requests are shared between instances: a different "instance" each time
+for i in 1 2 3; do curl -s --ssl-no-revoke --cacert certs/ca.pem https://localhost:8443/health; echo; done
+
+# Filtering: 404 for other paths, 405 for other methods
+curl -sk -o /dev/null -w "%{http_code}\n" https://localhost:8443/
+curl -sk -o /dev/null -w "%{http_code}\n" -X PUT https://localhost:8443/api/me
+
+# Rate limit: about 300 succeed on one connection, then 429; the monitor raises "Possible DDoS"
+curl -sk -o /dev/null -w "%{http_code}\n" $(printf 'https://localhost:8443/health %.0s' {1..330}) | sort | uniq -c
+
+# Failover: stop two instances while sending requests; the monitor raises an
+# instance alert and resolves it once they are back
+docker kill evoting-api-2 evoting-api-3
+docker compose up -d
+```
+
+Tests: `python -m pytest backend/tests/test_rate_limit.py infra/tests`
+
+This runs on one Docker host, which shows the mechanisms but is still a single
+point of failure. In production the same images run as instances in several
+availability zones behind a provider's DDoS-protected load balancer, which
+takes the edge's role, with the monitor outside that hosting. The Next.js
+frontend is not replicated here.
 
 ## Results, receipts and verification
 
