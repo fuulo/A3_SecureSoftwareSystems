@@ -15,16 +15,18 @@ from fastapi.testclient import TestClient
 from google.cloud import firestore
 from starlette.requests import Request
 
-from backend import archive, audit, receipts, reconciliation, results
+from backend import archive, audit, ballot_integrity, ballots, receipts, reconciliation, results
 from backend.main import app
 from backend.rate_limit import limiter
 from backend.routers import public_results
 from backend.security import hashing, signing
+from backend.security.encryption import EncryptionService, generate_key
 from backend.tests.fake_firestore import FakeDb, fake_transactional
 
 PUBLISHED = datetime(2028, 5, 1, 9, 0, tzinfo=timezone.utc)
 ADMIN = {"staffId": "a1", "role": "admin", "stateId": "VIC"}
 CODES = ["7KQ2M9XD4RTAH8WC", "23456789ABCDEFGH"]
+ENCRYPTION = EncryptionService({"k1": generate_key()}, "k1")
 
 
 class FakeBucket:
@@ -63,13 +65,15 @@ def db(monkeypatch):
     store["elections/e1/candidates/s1"] = {"chamber": "senate", "stateId": "VIC", "groupId": None, "name": "Sam"}
     for number, code in enumerate(CODES, start=1):
         store[f"voters/v{number}"] = {"enrolmentStatus": "enrolled", "voted": True, "votedElections.e1": True}
-        store[f"elections/e1/houseBallots/h{number}"] = {"divisionId": "div_vic", "preferences": ["h1"], "isFormal": True}
-        store[f"elections/e1/senateBallots/s{number}"] = {"stateId": "VIC", "belowTheLine": ["s1"], "aboveTheLine": [],
-                                                          "isFormal": True, "countedAs": "belowTheLine"}
+        store[f"elections/e1/houseBallots/h{number}"] = ballots.house_document(
+            "e1", f"h{number}", "div_vic", ["h1"], ENCRYPTION)
+        store[f"elections/e1/senateBallots/s{number}"] = ballots.senate_document(
+            "e1", f"s{number}", "VIC", [], ["s1"], ENCRYPTION)
         store[f"receipts/{receipts.receipt_hash(code)}"] = {"electionId": "e1", "recordedAt": PUBLISHED}
     store[f"receipts/{receipts.receipt_hash('ABCDEFGHJKMNPQRS')}"] = {"electionId": "e2", "recordedAt": PUBLISHED}
-    for module in (results, receipts, reconciliation, audit, public_results):
+    for module in (results, receipts, reconciliation, audit, public_results, ballot_integrity):
         monkeypatch.setattr(module, "db", fake)
+    monkeypatch.setattr(ballot_integrity, "get_encryption_service", lambda: ENCRYPTION)
     monkeypatch.setattr(firestore, "transactional", fake_transactional)
     limiter.reset()
     yield fake
@@ -151,7 +155,7 @@ def test_publishing_archives_the_package_and_receipt_list(db, bucket):
     package = json.loads(published["packageJson"])
     receipt_list = receipts.receipt_list("e1")
     receipts_fingerprint = hashlib.sha256(receipt_list).hexdigest()
-    assert package["packageVersion"] == 4
+    assert package["packageVersion"] == 5
     assert package["election"]["receiptsFingerprint"] == receipts_fingerprint == published["receiptsFingerprint"]
     assert package["election"]["receiptsHashAlgorithm"] == "sha256"
     assert {(u["name"], u["data"]) for u in bucket.uploads} == {

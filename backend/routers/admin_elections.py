@@ -6,11 +6,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from google.cloud import firestore
 
+from backend import ballot_integrity
 from backend.audit import write_audit
 from backend.auth import staff_access
 from backend.election_defaults import write_default_structure
 from backend.firestore_client import db
-from backend.models import ElectionCreate, PhaseChange
+from backend.models import ElectionCreate, FlagReview, PhaseChange
 from backend.reconciliation import require_reconciled
 
 logger = logging.getLogger(__name__)
@@ -132,6 +133,8 @@ def change_phase(election_id: str, body: PhaseChange, request: Request,
         audit_after: dict[str, Any] = {"status": body.to}
         if reconciliation is not None:
             audit_after["reconciliation"] = reconciliation
+        if ballot_check is not None:
+            audit_after["ballotIntegrity"] = ballot_check
         write_audit(tx, actor=staff, action="election.phaseChange", category="admin",
                     target_type="election", target_id=election_id, target_path=ref.path,
                     before={"status": current}, after=audit_after,
@@ -140,10 +143,13 @@ def change_phase(election_id: str, body: PhaseChange, request: Request,
         return body.to
 
     reconciliation: dict[str, Any] | None = None
+    ballot_check: dict[str, int] | None = None
     try:
         if body.to == "finalised" and (ref.get().to_dict() or {}).get("status") == "counting":
             # Voting has closed, so these counts cannot change before the transaction below.
             reconciliation = require_reconciled(election_id, staff, request)
+            # Every ballot must pass its integrity checks or be flagged and reviewed (R-15).
+            ballot_check = ballot_integrity.ballots_to_count(election_id, staff, request).summary()
         status = change(transaction)
         return {"status": status}
     except HTTPException as exc:
@@ -164,3 +170,21 @@ def change_phase(election_id: str, body: PhaseChange, request: Request,
     except Exception as exc:
         logger.exception("Election phase change failed")
         raise HTTPException(status_code=400, detail="Unable to change election phase") from exc
+
+
+@router.post("/{election_id}/ballots/check")
+def check_ballots(election_id: str, request: Request,
+                  staff: dict[str, Any] = Depends(admin_access)) -> dict[str, int]:
+    """Check every ballot's integrity now and flag failures (R-15); finalising runs the same check."""
+    return ballot_integrity.run_check(election_id, staff, request)
+
+
+@router.get("/{election_id}/flagged-ballots")
+def flagged_ballots(election_id: str, staff: dict[str, Any] = Depends(admin_access)) -> list[dict[str, Any]]:
+    return ballot_integrity.list_flags(election_id)
+
+
+@router.post("/{election_id}/flagged-ballots/{flag_id}/review")
+def review_flagged_ballot(election_id: str, flag_id: str, body: FlagReview, request: Request,
+                          staff: dict[str, Any] = Depends(admin_access)) -> dict[str, str]:
+    return ballot_integrity.review_flag(election_id, flag_id, body.note, staff, request)

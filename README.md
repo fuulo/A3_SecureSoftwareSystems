@@ -232,6 +232,40 @@ openssl pkeyutl -verify -pubin -inkey results-signing-key.pem -rawin -in result-
 
 Tests: `python -m pytest backend/tests/test_signing.py backend/tests/test_archive.py`
 
+### Ballot integrity (R-15)
+
+Every ballot is checked before it is counted
+([backend/ballot_integrity.py](./backend/ballot_integrity.py)). Each ballot's
+choices are encrypted with AES-256-GCM, with the ballot's election, chamber,
+contest, ballot ID and source as associated data
+([backend/ballots.py](./backend/ballots.py)). Those values are authenticated
+but not encrypted, so a ballot that was altered, or copied or moved to
+another ballot, contest or election, no longer decrypts. Once decrypted, a
+ballot must hold a list of choices, number each choice at most once, and name
+only candidates (or Senate groups) of its own contest. Candidates withdrawn
+after voting began still count as part of the contest.
+
+A ballot that fails is left out of the count and flagged in
+`elections/{id}/flaggedBallots`, with a `ballot.integrityFailed` audit entry
+naming the failed check (`decrypt_failed`, `malformed`, `duplicate_choice`,
+`unknown_choice`, or `legacy_unverified` for ballots stored without this
+protection). Flags never hold the ballot's choices. Finalising the election
+and publishing its results both run the check, and both are refused with 409
+while any flag awaits review. An admin reviews each flag with a note in the
+Elections page (**Ballot integrity → Flagged ballots**). The review is audited
+(`ballot.flagReviewed`), and the ballot stays excluded. The result package
+(version 5) reports `excludedHouseBallots` and `excludedSenateBallots`, and the
+verify-package page allows for them when it checks each chamber's totals.
+
+If the encryption keys cannot be loaded, the check stops with 503 and nothing
+is flagged.
+
+Scanned paper ballots are not yet supported. An import would store them
+through `house_document`/`senate_document` with `source: "paper_scan"`, so they
+get the same checks.
+
+Tests: `python -m pytest backend/tests/test_ballot_integrity.py`
+
 ## Results, receipts and verification
 
 | Endpoint | Who | Purpose |
@@ -239,8 +273,11 @@ Tests: `python -m pytest backend/tests/test_signing.py backend/tests/test_archiv
 | `GET /api/voter/ballots/current` | Enrolled voter (Firebase token, voter IP allowlist) | The open election and the voter's House and Senate ballot papers in ballot order, used by `/voter/ballot`; once they have voted, only that fact |
 | `POST /api/voter/ballots/{electionId}/start` | Enrolled voter (Firebase token, voter IP allowlist) | Starts a 15-minute voting session; refused if the voter has voted in this election or already has an active session |
 | `POST /api/voter/ballots/{electionId}/submit` | Voter with an active session | Validates the ballot, stores it encrypted (AES-256-GCM), marks the voter as voted and returns a one-time receipt code, all in one transaction |
-| `POST /api/admin/elections/{id}/results/publish` | Admin | Counts a finalised election, archives the package and receipt list for 7 years (R-06), then freezes the result package |
-| `POST /api/admin/elections/{id}/phase` with `{"to": "finalised"}` | Admin | Finalises only if voters marked voted, House ballots, Senate ballots and receipts all match (R-05); a mismatch is refused and logged |
+| `POST /api/admin/elections/{id}/results/publish` | Admin | Checks every ballot again (R-15), counts those that pass, archives the package and receipt list for 7 years (R-06), then freezes the result package |
+| `POST /api/admin/elections/{id}/phase` with `{"to": "finalised"}` | Admin | Finalises only if voters marked voted, House ballots, Senate ballots and receipts all match (R-05), and every ballot passes its integrity check or has a reviewed flag (R-15); otherwise it is refused and logged |
+| `POST /api/admin/elections/{id}/ballots/check` | Admin, once voting has closed | Checks every ballot's integrity now and flags failures (R-15); returns the counted, excluded and pending-review totals |
+| `GET /api/admin/elections/{id}/flagged-ballots` | Admin | Ballots that failed their integrity check, awaiting review first |
+| `POST /api/admin/elections/{id}/flagged-ballots/{flagId}/review` with `{"note": "..."}` | Admin | Records the review of a flag (audited); the ballot stays excluded |
 | `GET /api/public/results` | Anyone | Latest published results, their fingerprint and its hash algorithm (SHA-256 by default), and their Ed25519 `signature` (`algorithm`, `keyId`, `value`; null before signing) |
 | `GET /api/public/results/package.json` | Anyone | Downloadable result package (the exact published bytes) |
 | `GET /api/public/results/package.sig` | Anyone | Raw Ed25519 signature of the package (R-09), for checking with tools such as openssl; 404 for results published before signing |

@@ -1,4 +1,4 @@
-"""How a ballot is stored, and how it is opened again for counting.
+"""How a ballot is stored, and how it is opened and checked again for counting.
 
 Ballot choices are encrypted with AES-256-GCM (backend/security/encryption.py)
 before they are stored. Only the division (House) or state (Senate) stays
@@ -8,19 +8,45 @@ are worked out only when ballots are decrypted for counting, so nothing about
 how someone voted is stored in the clear. Ballots never hold a voter reference
 or a timestamp.
 
-Ballots stored before encryption (plaintext ``preferences`` and ``isFormal``)
-are still counted as they are.
+The ballot's election, chamber, contest, ID and source are the cipher's
+associated data (R-15). They are authenticated but not encrypted, so a ballot
+whose choices were altered, or that was copied or moved to another ballot,
+contest or election, no longer decrypts. Once decrypted, its choices must
+still be valid for its contest. ``backend.ballot_integrity`` runs these checks
+on every ballot before counting.
 """
 import json
+from dataclasses import dataclass
 from typing import Any
 
 from backend.security.encryption import EncryptedValue, EncryptionService
 
 SENATE_BTL_MINIMUM = 6  # savings provision: 6 boxes below the line is formal
+# Stored on each ballot sealed with its context; ballots without it cannot be verified
+INTEGRITY_VERSION = 1
 
 
-class BallotUnreadable(Exception):
-    """A stored ballot could not be decrypted, or decrypted to something that is not a ballot."""
+class BallotInvalid(Exception):
+    """A stored ballot failed its integrity checks; ``reason`` names the check."""
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+@dataclass(frozen=True)
+class HouseContest:
+    # Every candidate in the division, withdrawn ones too: ballots cast before a withdrawal name them
+    candidates: frozenset[str]
+    # Candidates still standing, which a formal ballot must number
+    standing: int
+
+
+@dataclass(frozen=True)
+class SenateContest:
+    groups: frozenset[str]
+    candidates: frozenset[str]
+    standing: int
 
 
 def house_is_formal(preferences: list[str], candidate_count: int) -> bool:
@@ -40,62 +66,90 @@ def senate_counted_as(above: list[str], below: list[str], candidate_count: int) 
     return None
 
 
-def _seal(encryption: EncryptionService, value: Any) -> dict[str, str]:
-    sealed = encryption.encrypt(json.dumps(value, separators=(",", ":")))
+def _context(election_id: str, ballot_id: str, chamber: str, contest_id: Any, source: Any) -> bytes:
+    return json.dumps({"electionId": election_id, "ballotId": ballot_id, "chamber": chamber,
+                       "contestId": contest_id, "source": source, "integrity": INTEGRITY_VERSION},
+                      sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _seal(encryption: EncryptionService, value: Any, context: bytes) -> dict[str, str]:
+    sealed = encryption.encrypt(json.dumps(value, separators=(",", ":")), context)
     return {"ciphertext": sealed.ciphertext, "keyId": sealed.keyId}
 
 
-def _unseal(encryption: EncryptionService, sealed: Any) -> Any:
+def _unseal(encryption: EncryptionService, sealed: Any, context: bytes) -> Any:
     try:
-        return json.loads(encryption.decrypt(EncryptedValue(sealed["ciphertext"], sealed["keyId"])))
+        return json.loads(encryption.decrypt(EncryptedValue(sealed["ciphertext"], sealed["keyId"]), context))
     except Exception as exc:
-        raise BallotUnreadable("Ballot could not be decrypted") from exc
+        raise BallotInvalid("decrypt_failed", "Ballot was altered or is not where it was stored") from exc
 
 
 def _choices(value: Any) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise BallotUnreadable("Ballot does not hold a list of choices")
+        raise BallotInvalid("malformed", "Ballot does not hold a list of choices")
     return value
 
 
-def house_document(division_id: str, preferences: list[str], encryption: EncryptionService) -> dict[str, Any]:
-    return {"divisionId": division_id, "source": "electronic",
-            "encryptedPreferences": _seal(encryption, preferences)}
+def _check(choices: list[str], known: frozenset[str]) -> None:
+    if len(set(choices)) != len(choices):
+        raise BallotInvalid("duplicate_choice", "Ballot numbers a choice more than once")
+    if not known.issuperset(choices):
+        raise BallotInvalid("unknown_choice", "Ballot names a choice outside its contest")
 
 
-def senate_document(state_id: str, above: list[str], below: list[str],
-                    encryption: EncryptionService) -> dict[str, Any]:
-    return {"stateId": state_id, "source": "electronic",
-            "encryptedChoices": _seal(encryption, {"aboveTheLine": above, "belowTheLine": below})}
+def _require_protected(document: dict[str, Any], field: str) -> None:
+    if document.get("integrity") != INTEGRITY_VERSION or not isinstance(document.get(field), dict):
+        raise BallotInvalid("legacy_unverified", "Ballot was stored without integrity protection")
 
 
-def is_encrypted(document: dict[str, Any]) -> bool:
-    return "encryptedPreferences" in document or "encryptedChoices" in document
+def house_document(election_id: str, ballot_id: str, division_id: str, preferences: list[str],
+                   encryption: EncryptionService, source: str = "electronic") -> dict[str, Any]:
+    context = _context(election_id, ballot_id, "house", division_id, source)
+    return {"divisionId": division_id, "source": source, "integrity": INTEGRITY_VERSION,
+            "encryptedPreferences": _seal(encryption, preferences, context)}
 
 
-def open_house(document: dict[str, Any], encryption: EncryptionService | None,
-               candidate_count: int) -> dict[str, Any]:
-    """The ballot as counting needs it: divisionId, preferences and isFormal."""
-    if "encryptedPreferences" not in document:
-        return document
-    if encryption is None:
-        raise BallotUnreadable("No encryption keys are available")
-    preferences = _choices(_unseal(encryption, document["encryptedPreferences"]))
-    return {"divisionId": document.get("divisionId"), "preferences": preferences,
-            "isFormal": house_is_formal(preferences, candidate_count)}
+def senate_document(election_id: str, ballot_id: str, state_id: str, above: list[str], below: list[str],
+                    encryption: EncryptionService, source: str = "electronic") -> dict[str, Any]:
+    context = _context(election_id, ballot_id, "senate", state_id, source)
+    return {"stateId": state_id, "source": source, "integrity": INTEGRITY_VERSION,
+            "encryptedChoices": _seal(encryption, {"aboveTheLine": above, "belowTheLine": below}, context)}
 
 
-def open_senate(document: dict[str, Any], encryption: EncryptionService | None,
-                candidate_count: int) -> dict[str, Any]:
-    """The ballot as counting needs it: stateId, both parts, isFormal and countedAs."""
-    if "encryptedChoices" not in document:
-        return document
-    if encryption is None:
-        raise BallotUnreadable("No encryption keys are available")
-    choices = _unseal(encryption, document["encryptedChoices"])
+def is_protected(document: dict[str, Any]) -> bool:
+    return document.get("integrity") == INTEGRITY_VERSION
+
+
+def open_house(election_id: str, ballot_id: str, document: dict[str, Any], encryption: EncryptionService,
+               contest: HouseContest) -> dict[str, Any]:
+    """The checked ballot as counting needs it: divisionId, preferences and isFormal.
+
+    Raises BallotInvalid if any integrity check fails.
+    """
+    _require_protected(document, "encryptedPreferences")
+    division_id = document.get("divisionId")
+    context = _context(election_id, ballot_id, "house", division_id, document.get("source"))
+    preferences = _choices(_unseal(encryption, document["encryptedPreferences"], context))
+    _check(preferences, contest.candidates)
+    return {"divisionId": division_id, "preferences": preferences,
+            "isFormal": house_is_formal(preferences, contest.standing)}
+
+
+def open_senate(election_id: str, ballot_id: str, document: dict[str, Any], encryption: EncryptionService,
+                contest: SenateContest) -> dict[str, Any]:
+    """The checked ballot as counting needs it: stateId, both parts, isFormal and countedAs.
+
+    Raises BallotInvalid if any integrity check fails.
+    """
+    _require_protected(document, "encryptedChoices")
+    state_id = document.get("stateId")
+    context = _context(election_id, ballot_id, "senate", state_id, document.get("source"))
+    choices = _unseal(encryption, document["encryptedChoices"], context)
     if not isinstance(choices, dict):
-        raise BallotUnreadable("Senate ballot does not hold its two parts")
+        raise BallotInvalid("malformed", "Senate ballot does not hold its two parts")
     above, below = _choices(choices.get("aboveTheLine")), _choices(choices.get("belowTheLine"))
-    counted_as = senate_counted_as(above, below, candidate_count)
-    return {"stateId": document.get("stateId"), "aboveTheLine": above, "belowTheLine": below,
+    _check(above, contest.groups)
+    _check(below, contest.candidates)
+    counted_as = senate_counted_as(above, below, contest.standing)
+    return {"stateId": state_id, "aboveTheLine": above, "belowTheLine": below,
             "isFormal": counted_as is not None, "countedAs": counted_as}

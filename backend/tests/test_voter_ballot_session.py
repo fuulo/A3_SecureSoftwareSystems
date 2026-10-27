@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from google.cloud import firestore
 from starlette.requests import Request
 
-from backend import archive, audit, auth, receipts, reconciliation, results
+from backend import archive, audit, auth, ballot_integrity, ballots, receipts, reconciliation, results
 from backend.auth import enforce_voter_ip_allowlist, verify_token
 from backend.main import app
 from backend.rate_limit import limiter
@@ -67,12 +67,12 @@ def env(monkeypatch):
         store[f"voters/v{number}"] = {"authUid": f"uid_{number}", "enrolmentStatus": "enrolled",
                                       "divisionId": "div_vic", "stateId": "VIC", "voted": False}
 
-    for module in (voter_ballots, receipts, audit, reconciliation, results, auth):
+    for module in (voter_ballots, receipts, audit, reconciliation, results, auth, ballot_integrity):
         monkeypatch.setattr(module, "db", db)
     monkeypatch.setattr(firestore, "transactional", fake_transactional)
     encryption = EncryptionService({"k1": generate_key()}, "k1")
     monkeypatch.setattr(voter_ballot_session, "get_encryption_service", lambda: encryption)
-    monkeypatch.setattr(results, "get_encryption_service", lambda: encryption)
+    monkeypatch.setattr(ballot_integrity, "get_encryption_service", lambda: encryption)
     for name, value in {"B2_KEY_ID": None, "ARCHIVE_REQUIRED": False}.items():
         monkeypatch.setattr(archive, name, value)
 
@@ -213,13 +213,17 @@ def test_submitting_stores_an_encrypted_ballot_and_returns_a_receipt(env):
     assert response.status_code == 201
     body = response.json()
     assert receipts.normalize_receipt(body["receipt"]) is not None and body["electionId"] == ELECTION
-    [house] = env.docs(f"elections/{ELECTION}/houseBallots")
+    [(house_path, house)] = [(p, d) for p, d in env.store.items() if p.startswith(f"elections/{ELECTION}/houseBallots/")]
     [senate] = env.docs(f"elections/{ELECTION}/senateBallots")
     # Only the contest stays readable: no choices, formality, voter reference or time
-    assert set(house) == {"divisionId", "source", "encryptedPreferences"}
-    assert set(senate) == {"stateId", "source", "encryptedChoices"}
+    assert set(house) == {"divisionId", "source", "integrity", "encryptedPreferences"}
+    assert set(senate) == {"stateId", "source", "integrity", "encryptedChoices"}
     assert "h1" not in json.dumps(house) and "s1" not in json.dumps(senate)
-    assert json.loads(env.encryption.decrypt(_sealed(house["encryptedPreferences"]))) == ["h2", "h1"]
+    # Sealed to its own ballot, contest and election (R-15)
+    context = ballots._context(ELECTION, house_path.rsplit("/", 1)[1], "house", "div_vic", "electronic")
+    assert json.loads(env.encryption.decrypt(_sealed(house["encryptedPreferences"]), context)) == ["h2", "h1"]
+    with pytest.raises(Exception):
+        env.encryption.decrypt(_sealed(house["encryptedPreferences"]))
     # The receipt is stored hashed, for this election
     assert env.store[f"receipts/{receipts.receipt_hash(receipts.normalize_receipt(body['receipt']))}"][
         "electionId"] == ELECTION
@@ -307,33 +311,3 @@ def test_encrypted_ballots_reconcile_and_are_counted_when_published(env):
     assert {c["id"]: c["votes"] for c in house["candidates"]} == {"h1": 0, "h2": 1}
     assert senate["informal"] == 0
     assert {c["id"]: c["votes"] for c in senate["candidates"]} == {"g1": 2}
-
-
-def test_a_ballot_that_cannot_be_decrypted_stops_publication(env):
-    assert _cast(env).status_code == 201
-    [path] = [p for p in env.store if p.startswith(f"elections/{ELECTION}/houseBallots/")]
-    sealed = env.store[path]["encryptedPreferences"]
-    env.store[path]["encryptedPreferences"] = {**sealed, "ciphertext": sealed["ciphertext"][:-4] + "AAAA"}
-    env.store[f"elections/{ELECTION}"]["status"] = "finalised"
-
-    with pytest.raises(HTTPException) as refused:
-        results.publish_results(ELECTION, {"staffId": "a1", "role": "admin"}, _request())
-
-    assert refused.value.status_code == 409
-    assert f"publishedResults/{ELECTION}" not in env.store
-
-
-def test_ballots_stored_before_encryption_are_still_counted(env):
-    assert _cast(env).status_code == 201
-    env.store[f"elections/{ELECTION}/houseBallots/legacy"] = {
-        "divisionId": "div_vic", "preferences": ["h1", "h2"], "source": "electronic", "isFormal": True}
-    env.store[f"elections/{ELECTION}/senateBallots/legacy"] = {
-        "stateId": "VIC", "aboveTheLine": ["g1"], "belowTheLine": [], "source": "electronic",
-        "isFormal": True, "countedAs": "aboveTheLine"}
-
-    house, senate = results._open_ballots(
-        {k.rsplit("/", 1)[1]: v for k, v in env.store.items() if "/candidates/" in k},
-        env.docs(f"elections/{ELECTION}/houseBallots"), env.docs(f"elections/{ELECTION}/senateBallots"))
-
-    assert sorted(b["preferences"][0] for b in house) == ["h1", "h2"]
-    assert all(b["isFormal"] for b in house + senate)

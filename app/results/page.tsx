@@ -139,6 +139,8 @@ export default function ResultsPage() {
 
   const { election, contests } = results.package;
   const fingerprintLabel = fingerprintAlgorithm(results.algorithm)?.label ?? results.algorithm;
+  const excludedHouse = election.excludedHouseBallots ?? 0;
+  const excludedSenate = election.excludedSenateBallots ?? 0;
 
   const summary = [
     { label: "Status", value: election.status },
@@ -167,6 +169,13 @@ export default function ResultsPage() {
             </div>
           ))}
         </dl>
+
+        {(excludedHouse > 0 || excludedSenate > 0) && (
+          <p className="mb-8 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+            {formatNumber(excludedHouse)} House and {formatNumber(excludedSenate)} Senate ballots failed
+            their integrity check and were left out of the count after review.
+          </p>
+        )}
 
         {contests.map((contest) => (
           <ContestResults key={contest.id} contest={contest} />

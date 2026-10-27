@@ -30,6 +30,16 @@ function text(row: Row, key: string): string {
   return String(value);
 }
 
+// Why a ballot failed its integrity check (backend/ballots.py, R-15)
+const FLAG_REASONS: Record<string, string> = {
+  decrypt_failed: "Altered, or moved from where it was stored",
+  malformed: "Does not hold a valid set of choices",
+  duplicate_choice: "Numbers a choice more than once",
+  unknown_choice: "Names a choice outside its contest",
+  legacy_unverified: "Stored without integrity protection",
+};
+const CHECKABLE_PHASES = ["closed", "counting", "finalised"];
+
 function PageHeading({ title, help }: { title: string; help?: string }) {
   return <div className="mb-6"><h1 className={mainHeader}>{title}</h1>{help && <p className="mt-2 text-slate-600">{help}</p>}</div>;
 }
@@ -74,6 +84,11 @@ export default function StaffTools() {
   const [phaseElection, setPhaseElection] = useState<Row | null>(null);
   const [phaseName, setPhaseName] = useState("");
   const [phaseTarget, setPhaseTarget] = useState("");
+  const [flagElection, setFlagElection] = useState<Row | null>(null);
+  const [flags, setFlags] = useState<Row[]>([]);
+  const [ballotCheck, setBallotCheck] = useState<Row | null>(null);
+  const [reviewingFlag, setReviewingFlag] = useState<Row | null>(null);
+  const [reviewNote, setReviewNote] = useState("");
   const voterId = params.voterId;
 
   const displayError = (cause: unknown) => {
@@ -372,6 +387,32 @@ export default function StaffTools() {
     }), `Election phase changed to ${phaseTarget}.`);
     setPhaseElection(null);
     setPhaseName("");
+  };
+
+  const electionUrl = (election: Row) => `/api/admin/elections/${encodeURIComponent(text(election, "electionId"))}`;
+
+  const showFlags = async (election: Row) => {
+    const result = await apiRequest<Row[]>(`${electionUrl(election)}/flagged-ballots`);
+    setFlags(result.map((flag) => ({ ...flag, id: text(flag, "flagId") })));
+    setFlagElection(election);
+  };
+
+  const checkBallots = (election: Row) => run(async () => {
+    setBallotCheck(await sendJson<Row>(`${electionUrl(election)}/ballots/check`, "POST", undefined));
+    await showFlags(election);
+  }, "Ballot integrity check complete.", false);
+
+  const submitFlagReview = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!flagElection || !reviewingFlag) return;
+    const election = flagElection;
+    const flagId = text(reviewingFlag, "flagId");
+    await run(async () => {
+      await sendJson(`${electionUrl(election)}/flagged-ballots/${encodeURIComponent(flagId)}/review`, "POST", { note: reviewNote });
+      await showFlags(election);
+    }, "Review recorded. The ballot stays excluded from the count.", false);
+    setReviewingFlag(null);
+    setReviewNote("");
   };
 
   const home = path?.endsWith("/dashboard");
@@ -730,7 +771,42 @@ export default function StaffTools() {
             setPhaseElection(row); setPhaseTarget(next); setPhaseName("");
           }}>Advance to {next}</button> : "Finalised";
         } },
+        { key: "integrity", label: "Ballot integrity", render: (row) => CHECKABLE_PHASES.includes(text(row, "status"))
+          ? <div className="flex gap-3">
+            <button className="text-[#1f538d] underline" disabled={busy} onClick={() => void checkBallots(row)}>Check ballots</button>
+            <button className="text-[#1f538d] underline" disabled={busy} onClick={() => {
+              setBallotCheck(null);
+              void run(() => showFlags(row), "", false);
+            }}>Flagged ballots</button>
+          </div>
+          : <span className="text-sm text-slate-600">After voting closes</span> },
       ])}
+      {flagElection && <section className="mt-6 rounded-lg border bg-white p-6">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold">Flagged ballots · {text(flagElection, "name")}</h2>
+            <p className="mt-1 text-sm text-slate-600">Ballots that fail their integrity check are left out of the count. Every flag must be reviewed before the election can be finalised or its results published. Reviewing does not return a ballot to the count.</p>
+          </div>
+          <button type="button" className={buttonSecondary} onClick={() => { setFlagElection(null); setBallotCheck(null); }}>Close</button>
+        </div>
+        {ballotCheck && <div className="mb-4"><Banner kind={Number(ballotCheck.pendingFlags) > 0 ? "error" : "success"}>
+          {text(ballotCheck, "countedHouseBallots")} House and {text(ballotCheck, "countedSenateBallots")} Senate ballots passed;{" "}
+          {text(ballotCheck, "excludedHouseBallots")} House and {text(ballotCheck, "excludedSenateBallots")} Senate ballots are excluded;{" "}
+          {text(ballotCheck, "pendingFlags")} flag(s) await review.
+        </Banner></div>}
+        <DataTable<Row> columns={[
+          { key: "ballotId", label: "Ballot" }, { key: "chamber", label: "Chamber" }, { key: "contestId", label: "Contest" },
+          { key: "reason", label: "Failed check", render: (row) => FLAG_REASONS[text(row, "reason")] ?? text(row, "reason") },
+          { key: "status", label: "Status", render: (row) => <StatusBadge value={text(row, "status")} /> },
+          { key: "reviewNote", label: "Review", render: (row) => row.status === "pending"
+            ? <button className="text-[#1f538d] underline" disabled={busy} onClick={() => { setReviewingFlag(row); setReviewNote(""); }}>Review</button>
+            : <span className="text-sm">{text(row, "reviewNote")} <span className="text-slate-600">({text(row, "reviewedBy")})</span></span> },
+        ]} rows={flags} emptyMessage="No ballots have been flagged for this election." />
+      </section>}
+      {reviewingFlag && <ConfirmModal title="Review flagged ballot" confirmLabel="Record review" busy={busy} onCancel={() => setReviewingFlag(null)} onConfirm={(event) => void submitFlagReview(event)}>
+        <p className="mb-3">{text(reviewingFlag, "chamber")} ballot {text(reviewingFlag, "ballotId")} failed: {FLAG_REASONS[text(reviewingFlag, "reason")] ?? text(reviewingFlag, "reason")}. It stays excluded from the count. Record what you checked.</p>
+        <textarea className={inputStyle} required maxLength={500} rows={4} value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} aria-label="Review note" />
+      </ConfirmModal>}
       {phaseElection && <ConfirmModal title={`Advance election to ${phaseTarget}`} confirmLabel="Advance phase" busy={busy} onCancel={() => setPhaseElection(null)} onConfirm={(event) => void submitPhase(event)}>
         <p className="mb-3 text-sm text-red-800">This transition cannot be reversed. Type the election name to confirm.</p>
         <input className={inputStyle} ref={(element) => element?.focus()} required value={phaseName} onChange={(event) => setPhaseName(event.target.value)} aria-label="Election name confirmation" />

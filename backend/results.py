@@ -8,6 +8,9 @@ results page. The bytes are also signed with Ed25519 (R-09,
 ``backend.security.signing``), so a copy can be proven genuine with the public
 key alone. The package, its signature, the public key and the receipt list are
 archived, locked for 7 years (``backend.archive``), before anything is published.
+
+Only ballots that pass their integrity checks are counted (R-15,
+``backend.ballot_integrity``); the package reports how many were left out.
 """
 import json
 import logging
@@ -19,17 +22,16 @@ from zoneinfo import ZoneInfo
 from fastapi import HTTPException, Request
 from google.cloud import firestore
 
-from backend import ballots
 from backend.archive import archive_election
 from backend.audit import write_audit
+from backend.ballot_integrity import ballots_to_count
 from backend.firestore_client import db
 from backend.receipts import receipt_list
 from backend.reconciliation import require_reconciled
 from backend.security import hashing, signing
-from backend.security.key_management import get_encryption_service
 
 logger = logging.getLogger(__name__)
-PACKAGE_VERSION = 4
+PACKAGE_VERSION = 5
 INDEPENDENT = "Independent"
 
 Docs = dict[str, dict[str, Any]]
@@ -139,6 +141,7 @@ def tally_senate(regions: Docs, groups: Docs, candidates: Docs, parties: Docs,
 def build_package(election_id: str, election: dict[str, Any], contests: list[dict[str, Any]], *,
                   enrolled: int, ballots_cast: int, senate_ballots_cast: int, voters_marked_voted: int,
                   receipts_issued: int, receipts_fingerprint: str, receipts_hash_algorithm: str,
+                  excluded_house_ballots: int, excluded_senate_ballots: int,
                   published_at: datetime) -> dict[str, Any]:
     try:
         local = ZoneInfo(election.get("timezone") or "Australia/Melbourne")
@@ -152,9 +155,13 @@ def build_package(election_id: str, election: dict[str, Any], contests: list[dic
             "status": "Final",
             "publishedAt": published_at.astimezone(local).isoformat(timespec="seconds"),
             "enrolledVoters": enrolled,
-            # ballotsCast is the House ballot count, as in version 2 packages.
+            # ballotsCast is the House ballot count, as in version 2 packages. Both
+            # counts include ballots excluded for failing integrity checks.
             "ballotsCast": ballots_cast,
             "senateBallotsCast": senate_ballots_cast,
+            # Added in version 5: ballots left out of every contest (R-15)
+            "excludedHouseBallots": excluded_house_ballots,
+            "excludedSenateBallots": excluded_senate_ballots,
             "votersMarkedVoted": voters_marked_voted,
             "receiptsIssued": receipts_issued,
             # Fingerprint of the published receipt list (see backend.receipts.receipt_list),
@@ -179,26 +186,6 @@ def _count(query: Any) -> int:
     return int(query.count().get()[0][0].value)
 
 
-def _open_ballots(candidates: Docs, house_docs: list[dict[str, Any]],
-                  senate_docs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Decrypt ballots for counting. Formality is decided here, from the candidates
-    each contest has, so it is never stored beside an encrypted ballot."""
-    usable = [c for c in candidates.values() if c.get("withdrawn") is not True and c.get("excluded") is not True]
-    house_counts = Counter(c.get("divisionId") for c in usable if c.get("chamber") == "house")
-    senate_counts = Counter(c.get("stateId") for c in usable if c.get("chamber") == "senate")
-    encrypted = any(ballots.is_encrypted(doc) for doc in house_docs + senate_docs)
-    encryption = get_encryption_service() if encrypted else None
-    try:
-        return (
-            [ballots.open_house(doc, encryption, house_counts[doc.get("divisionId")]) for doc in house_docs],
-            [ballots.open_senate(doc, encryption, senate_counts[doc.get("stateId")]) for doc in senate_docs],
-        )
-    except ballots.BallotUnreadable as exc:
-        logger.exception("A ballot could not be opened for counting")
-        raise HTTPException(status_code=409,
-                            detail="A ballot could not be decrypted, so results were not published") from exc
-
-
 def publish_results(election_id: str, actor: dict[str, Any], request: Request) -> dict[str, str]:
     election_ref = db.collection("elections").document(election_id)
     published_ref = db.collection("publishedResults").document(election_id)
@@ -214,17 +201,14 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
     reconciliation = require_reconciled(election_id, actor, request)
 
     # Ballots cannot change once an election is finalised, so they are read outside the transaction.
+    # Checked again here: finalisation required it, so a failure now means a ballot changed since.
+    checked = ballots_to_count(election_id, actor, request)
     candidates = _docs(election_ref.collection("candidates"))
     parties = _docs(election_ref.collection("parties"))
-    house_ballots, senate_ballots = _open_ballots(
-        candidates,
-        [item.to_dict() or {} for item in election_ref.collection("houseBallots").stream()],
-        [item.to_dict() or {} for item in election_ref.collection("senateBallots").stream()],
-    )
     contests = (
-        tally_house(_docs(election_ref.collection("divisions")), candidates, parties, house_ballots)
+        tally_house(_docs(election_ref.collection("divisions")), candidates, parties, checked.house)
         + tally_senate(_docs(election_ref.collection("senateRegions")), _docs(election_ref.collection("senateGroups")),
-                       candidates, parties, senate_ballots)
+                       candidates, parties, checked.senate)
     )
     receipts = receipt_list(election_id)
     if receipts.count(b"\n") != reconciliation["receiptsIssued"]:
@@ -234,12 +218,14 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
     package = build_package(
         election_id, election, contests,
         enrolled=_count(db.collection("voters").where("enrolmentStatus", "==", "enrolled")),
-        ballots_cast=len(house_ballots),
-        senate_ballots_cast=len(senate_ballots),
+        ballots_cast=len(checked.house) + checked.excluded_house,
+        senate_ballots_cast=len(checked.senate) + checked.excluded_senate,
         voters_marked_voted=reconciliation["votersMarkedVoted"],
         receipts_issued=reconciliation["receiptsIssued"],
         receipts_fingerprint=receipts_fingerprint,
         receipts_hash_algorithm=receipts_algorithm,
+        excluded_house_ballots=checked.excluded_house,
+        excluded_senate_ballots=checked.excluded_senate,
         published_at=published_at,
     )
     content = package_bytes(package)
@@ -275,7 +261,9 @@ def publish_results(election_id: str, actor: dict[str, Any], request: Request) -
                     before=None,
                     after={"fingerprint": fingerprint, "hashAlgorithm": algorithm,
                            "signature": signature,
-                           "ballotsCast": len(house_ballots),
+                           "ballotsCast": len(checked.house) + checked.excluded_house,
+                           "excludedHouseBallots": checked.excluded_house,
+                           "excludedSenateBallots": checked.excluded_senate,
                            "receiptsFingerprint": receipts_fingerprint, "archive": archive},
                     outcome="success", reason=None if archive else "archive_not_configured",
                     request=request, election_id=election_id)

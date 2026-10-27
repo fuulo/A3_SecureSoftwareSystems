@@ -87,8 +87,16 @@ class EncryptionService:
     def active_key_id(self) -> str:
         return self._active_key_id
 
-    def encrypt(self, plaintext: str | None) -> EncryptedValue | None:
-        """Encrypt a UTF-8 string and return a portable ciphertext bundle."""
+    def encrypt(
+        self,
+        plaintext: str | None,
+        associated_data: bytes | None = None,
+    ) -> EncryptedValue | None:
+        """Encrypt a UTF-8 string and return a portable ciphertext bundle.
+
+        ``associated_data`` is authenticated but not stored: decrypt() must be
+        given the same bytes, so a ciphertext only opens in its own context.
+        """
         if plaintext is None:
             return None
 
@@ -100,7 +108,7 @@ class EncryptionService:
         ciphertext = aesgcm.encrypt(
             nonce,
             plaintext.encode("utf-8"),
-            None,
+            associated_data,
         )
 
         packed = nonce + ciphertext
@@ -110,7 +118,11 @@ class EncryptionService:
             keyId=self._active_key_id,
         )
 
-    def decrypt(self, encrypted: EncryptedValue | None) -> str | None:
+    def decrypt(
+        self,
+        encrypted: EncryptedValue | None,
+        associated_data: bytes | None = None,
+    ) -> str | None:
         """Decrypt a ciphertext bundle produced by encrypt()."""
         if encrypted is None:
             return None
@@ -128,7 +140,7 @@ class EncryptionService:
             ciphertext = packed[NONCE_LENGTH_BYTES:]
 
             aesgcm = AESGCM(self._keys[encrypted.keyId])
-            plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+            plaintext = aesgcm.decrypt(nonce, ciphertext, associated_data)
         except Exception as exc:
             raise EncryptionKeyError("Unable to decrypt value") from exc
 

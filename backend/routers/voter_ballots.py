@@ -232,7 +232,8 @@ def record_ballot(voter_id: str, election_id: str, body: BallotSubmission, reque
                   encryption: EncryptionService, require_session: bool = True) -> dict[str, str]:
     """Record one voter's House and Senate ballots and return their receipt.
 
-    Ballots are stored encrypted, without any voter reference or timestamp, and
+    Ballots are stored encrypted and sealed to their own ID, contest and
+    election (R-15), without any voter reference or timestamp, and
     the voter record only gains ``voted: true`` and the election it voted in, so
     a ballot cannot be traced to a voter. ``require_session`` is turned off only
     by trusted internal callers such as the demo seed.
@@ -249,10 +250,13 @@ def record_ballot(voter_id: str, election_id: str, body: BallotSubmission, reque
         election_ref = _open_election(tx, election_id)
         division_id = _house_choices(tx, election_ref, voter, body.house.preferences)
         state_id = _senate_choices(tx, election_ref, voter, body.senate.aboveTheLine, body.senate.belowTheLine)
-        tx.create(election_ref.collection("houseBallots").document(),
-                  ballots.house_document(division_id, body.house.preferences, encryption))
-        tx.create(election_ref.collection("senateBallots").document(),
-                  ballots.senate_document(state_id, body.senate.aboveTheLine, body.senate.belowTheLine, encryption))
+        # Each ballot is sealed to its own ID and contest (R-15), so its ID is chosen first.
+        house_ref = election_ref.collection("houseBallots").document()
+        senate_ref = election_ref.collection("senateBallots").document()
+        tx.create(house_ref, ballots.house_document(election_id, house_ref.id, division_id,
+                                                    body.house.preferences, encryption))
+        tx.create(senate_ref, ballots.senate_document(election_id, senate_ref.id, state_id, body.senate.aboveTheLine,
+                                                      body.senate.belowTheLine, encryption))
         tx.update(voter_ref, {"voted": True, voted_field(election_id): True,
                               "voting": False, "activeElectionId": None, "sessionExpiresAt": None})
         return issue_receipt(tx, election_id)
