@@ -1,0 +1,13 @@
+**/__pycache__
+**/*.py[cod]
+**/.env*
+**/*.pem
+**/*service-account*.json
+.git
+.next
+.venv
+.pytest_cache
+node_modules
+certs
+logs
+backend/tests

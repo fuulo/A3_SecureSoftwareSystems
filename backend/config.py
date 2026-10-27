@@ -22,6 +22,9 @@ ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 TRUST_PROXY_HEADERS = _as_bool(os.getenv("TRUST_PROXY_HEADERS"))
+# Where request counts are kept (see backend/rate_limit.py). Instances behind
+# the load balancer share one Redis, e.g. redis://redis:6379/0
+RATE_LIMIT_STORAGE_URI = os.getenv("RATE_LIMIT_STORAGE_URI", "memory://")
 TLS_CERT_FILE = os.getenv("TLS_CERT_FILE", "certs/localhost.pem")
 TLS_KEY_FILE = os.getenv("TLS_KEY_FILE", "certs/localhost-key.pem")
 TLS_LOG_FILE = os.getenv("TLS_LOG_FILE", "logs/tls-security-api.log")

@@ -1,0 +1,81 @@
+# Redundant API deployment for R-07 (99.9% availability, DDoS detection and
+# mitigation). See "Run the API with redundancy" in README.md.
+#
+#   edge     HAProxy: TLS 1.3, traffic filtering, per-client rate limits,
+#            health checks, load balancing. The only published API port.
+#   api      Stateless API instances (3 by default). Sessions, lockouts and
+#            data live in Firestore, so any instance can serve any request.
+#   redis    Request counts for the API's own rate limits, shared by every instance
+#   monitor  Uptime checks through the edge, with alerts (infra/uptime_monitor.py)
+#
+# Set FIREBASE_CREDENTIALS_FILE in a .env file next to this one (or in the
+# shell) to the service-account key that GOOGLE_APPLICATION_CREDENTIALS
+# names in backend/.env.
+
+name: evoting
+
+services:
+  edge:
+    image: haproxy:3.0.10-alpine
+    ports:
+      - "8443:8443"
+      - "127.0.0.1:8404:8404"
+    environment:
+      # Per client address; see infra/haproxy.cfg. Voters at one post can share
+      # an address, so these are set well above what one browser needs.
+      EDGE_MAX_REQUESTS_PER_10S: ${EDGE_MAX_REQUESTS_PER_10S:-300}
+      EDGE_MAX_CONNECTIONS_PER_CLIENT: ${EDGE_MAX_CONNECTIONS_PER_CLIENT:-100}
+      EDGE_MAX_NEW_CONNECTIONS_PER_10S: ${EDGE_MAX_NEW_CONNECTIONS_PER_10S:-200}
+    volumes:
+      - ./infra/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./certs:/certs:ro
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file: backend/.env
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/firebase.json
+      # Reachable only through the edge, which sets X-Forwarded-For
+      TRUST_PROXY_HEADERS: "true"
+      RATE_LIMIT_STORAGE_URI: redis://redis:6379/0
+    volumes:
+      - ./certs:/app/certs:ro
+      - ./logs:/app/logs
+      - ${FIREBASE_CREDENTIALS_FILE:?Set FIREBASE_CREDENTIALS_FILE to the Firebase service-account key}:/run/secrets/firebase.json:ro
+    deploy:
+      replicas: 3
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4.2-alpine
+    # Counts only: nothing written to disk, oldest counters dropped when full
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "volatile-ttl"]
+    restart: unless-stopped
+
+  monitor:
+    image: python:3.13.2-slim
+    command: ["python", "/infra/uptime_monitor.py"]
+    # Alert channels; any left empty is skipped. Only what it needs, not backend/.env.
+    environment:
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
+      SMTP_USE_SSL: ${SMTP_USE_SSL:-}
+    volumes:
+      - ./infra:/infra:ro
+      - ./certs:/certs:ro
+      - ./logs:/logs
+    depends_on:
+      - edge
+    restart: unless-stopped

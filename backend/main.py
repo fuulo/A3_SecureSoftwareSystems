@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import socket
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -158,4 +159,5 @@ def active_divisions(staff=Depends(staff_access("aecEmployee"))):
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    # The load balancer polls this; the instance name shows which one answered
+    return {"status": "ok", "instance": socket.gethostname()}
